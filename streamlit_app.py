@@ -159,7 +159,8 @@ THEMES = {
     "Default": (
         ".stApp,[data-testid='stAppViewContainer']{background:#0d1117!important;color:#c9d1d9!important}"
         "[data-testid='stSidebar']{background:#161b22!important}"
-        "[data-testid='stChatInput'] textarea{background:#2b2b2b!important;border:1px solid #555!important;color:#fff!important}"
+        "[data-testid='stChatInput']{background:#2b2b2b!important;border:1px solid #555!important;border-radius:8px!important}"
+        "[data-testid='stChatInput'] textarea{background:transparent!important;border:none!important;color:#fff!important;box-shadow:none!important}"
         "[data-testid='stChatInput'] button{background:#1f6feb!important;color:#fff!important;border:none!important}"
         "input,textarea{background:#2b2b2b!important;border:1px solid #555!important;color:#fff!important}"
         "div.stButton>button{background:#1f6feb!important;color:#fff!important;border:none!important}"
@@ -190,7 +191,6 @@ st.markdown("""
     .lightbox img { max-width: 95%; max-height: 95%; object-fit: contain; }
     .close-btn { position: absolute; top: 20px; left: 20px; color: white; font-size: 40px; text-decoration: none; font-weight: bold; }
     
-    /* Vibrant toggle animations */
     [data-testid="stToggle"] label div {
         transition: all 0.3s ease !important;
     }
@@ -580,45 +580,6 @@ with st.expander("📎 Attach", expanded=False):
         st.session_state.thinking_speed = st.select_slider(ui["thinking_speed"], options=["Fast", "Normal", "Deep Think"], value=st.session_state.thinking_speed)
         st.session_state.web_search_enabled = st.toggle(ui["web_search_label"], value=st.session_state.web_search_enabled, help=ui["web_search_help"])
 
-voice_url = f"https://voicechat-phistashkaai.streamlit.app/?key={device_key}"
-components.html(f"""
-<div id="mic-btn-container" style="display:none;">
-    <button id="custom-mic-btn" style="
-        background: #2b2b2b;
-        border: 2px solid #555;
-        border-radius: 50%;
-        width: 36px;
-        height: 36px;
-        cursor: pointer;
-        font-size: 18px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        margin-left: 6px;
-        transition: all 0.2s;
-        color: white;
-    " title="Open Voice Chat">🎙️</button>
-</div>
-<script>
-(function() {{
-    function injectMicButton() {{
-        const chatInput = window.parent.document.querySelector('[data-testid="stChatInput"]');
-        if (!chatInput) return setTimeout(injectMicButton, 200);
-        const sendBtn = chatInput.querySelector('button');
-        if (!sendBtn) return setTimeout(injectMicButton, 200);
-        if (document.getElementById('custom-mic-btn-injected')) return;
-        const micBtn = document.getElementById('custom-mic-btn');
-        if (!micBtn) return setTimeout(injectMicButton, 200);
-        const clone = micBtn.cloneNode(true);
-        clone.id = 'custom-mic-btn-injected';
-        clone.onclick = function() {{ window.open('{voice_url}', '_blank'); }};
-        sendBtn.parentNode.insertBefore(clone, sendBtn.nextSibling);
-    }}
-    injectMicButton();
-}})();
-</script>
-""", height=0)
-
 prompt = st.chat_input(st.session_state.placeholder_text)
 
 if prompt:
@@ -628,6 +589,29 @@ if prompt:
     st.session_state.all_chats[st.session_state.current_chat].append({"role": "user", "content": msg_content})
     save_chats()
     st.rerun()
+
+voice_url = f"https://voicechat-phistashkaai.streamlit.app/?key={device_key}"
+components.html(f"""
+<script>
+(function() {{
+    function injectMicButton() {{
+        var chatInput = window.parent.document.querySelector('[data-testid="stChatInput"]');
+        if (!chatInput) return setTimeout(injectMicButton, 200);
+        var sendBtn = chatInput.querySelector('button');
+        if (!sendBtn) return setTimeout(injectMicButton, 200);
+        if (document.getElementById('custom-mic-btn')) return;
+        var btn = document.createElement('button');
+        btn.id = 'custom-mic-btn';
+        btn.innerHTML = '🎙️';
+        btn.style = "background: #2b2b2b; border: 1px solid #555; border-radius: 50%; width: 36px; height: 36px; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; margin-left: 6px; transition: all 0.2s; color: white;";
+        btn.title = "Open Voice Chat";
+        btn.onclick = function() {{ window.open('{voice_url}', '_blank'); }};
+        sendBtn.parentNode.insertBefore(btn, sendBtn.nextSibling);
+    }}
+    injectMicButton();
+}})();
+</script>
+""", height=0)
 
 if (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "user" and st.session_state.edit_index is None):
     with st.chat_message("assistant"):
