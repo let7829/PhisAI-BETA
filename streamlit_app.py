@@ -177,8 +177,6 @@ BASE_CHAT_INPUT_STYLE = (
     "[data-testid='stChatInput'] textarea{background:transparent!important;border:none!important;color:#fff!important;box-shadow:none!important}"
     "[data-testid='stChatInput'] button{background:#1f6feb!important;color:#fff!important;border:none!important}"
     "input,textarea{background:#2b2b2b!important;border:1px solid #555!important;color:#fff!important}"
-    "div.stButton>button{background:#1f6feb!important;color:#fff!important;border:1px solid #1550a0!important}"
-    "button:not([data-testid='stChatInput'] button):not([id^='custom-mic-btn-']){background:#1f6feb!important;color:#fff!important;border:1px solid #1550a0!important}"
 )
 
 st.markdown(f"""
@@ -192,6 +190,18 @@ st.markdown(f"""
     
     {BASE_CHAT_INPUT_STYLE}
     h1,h2,h3,p{{color:#c9d1d9!important}}
+
+    /* Default button styling for all buttons except send and mic */
+    button:not([data-testid="stChatInput"] button):not([id^="custom-mic-btn-"]) {{
+        background: #1f6feb !important;
+        color: #ffffff !important;
+        border: 1px solid #1550a0 !important;
+        border-radius: 8px !important;
+    }}
+    button:not([data-testid="stChatInput"] button):not([id^="custom-mic-btn-"]):hover {{
+        background: #1550a0 !important;
+        border-color: #1f6feb !important;
+    }}
     </style>
 """, unsafe_allow_html=True)
 
