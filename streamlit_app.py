@@ -177,7 +177,8 @@ BASE_CHAT_INPUT_STYLE = (
     "[data-testid='stChatInput'] textarea{background:transparent!important;border:none!important;color:#fff!important;box-shadow:none!important}"
     "[data-testid='stChatInput'] button{background:#1f6feb!important;color:#fff!important;border:none!important}"
     "input,textarea{background:#2b2b2b!important;border:1px solid #555!important;color:#fff!important}"
-    "div.stButton>button{background:#1f6feb!important;color:#fff!important;border:none!important}"
+    "div.stButton>button{background:#1f6feb!important;color:#fff!important;border:1px solid #1550a0!important}"
+    "button:not([data-testid='stChatInput'] button):not([id^='custom-mic-btn-']){background:#1f6feb!important;color:#fff!important;border:1px solid #1550a0!important}"
 )
 
 st.markdown(f"""
