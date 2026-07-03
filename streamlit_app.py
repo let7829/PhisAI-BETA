@@ -190,17 +190,6 @@ st.markdown(f"""
     
     {BASE_CHAT_INPUT_STYLE}
     h1,h2,h3,p{{color:#c9d1d9!important}}
-
-    button:not([data-testid="stChatInput"] button):not(#custom-mic-btn) {{
-        background: #1e5db5 !important;
-        color: #ffffff !important;
-        border: 1px solid #143e7a !important;
-        border-radius: 8px !important;
-    }}
-    button:not([data-testid="stChatInput"] button):not(#custom-mic-btn):hover {{
-        background: #143e7a !important;
-        border-color: #1e5db5 !important;
-    }}
     </style>
 """, unsafe_allow_html=True)
 
