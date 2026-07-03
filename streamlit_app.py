@@ -15,7 +15,7 @@ from bs4 import BeautifulSoup
 
 def get_groq_client():
     if "active_key_index" not in st.session_state:
-        st.session_state.active_key_index = 1
+        st.session_state.active_key_index = random.choice(get_available_key_indices())
     key_name = f"GROQ_API_KEY_{st.session_state.active_key_index}"
     return Groq(api_key=st.secrets[key_name])
 
@@ -42,7 +42,7 @@ def switch_api_key():
 
 
 if "active_key_index" not in st.session_state:
-    st.session_state.active_key_index = 1
+    st.session_state.active_key_index = random.choice(get_available_key_indices())
 
 
 def init_token_tracking():
@@ -156,16 +156,6 @@ components.html("""
 
 THEMES = {
     "Old": "",
-    "Default": (
-        ".stApp,[data-testid='stAppViewContainer']{background:#0d1117!important;color:#c9d1d9!important}"
-        "[data-testid='stSidebar']{background:#161b22!important}"
-        "[data-testid='stChatInput']{background:#2b2b2b!important;border:1px solid #555!important;border-radius:8px!important}"
-        "[data-testid='stChatInput'] textarea{background:transparent!important;border:none!important;color:#fff!important;box-shadow:none!important}"
-        "[data-testid='stChatInput'] button{background:#1f6feb!important;color:#fff!important;border:none!important}"
-        "input,textarea{background:#2b2b2b!important;border:1px solid #555!important;color:#fff!important}"
-        "div.stButton>button{background:#1f6feb!important;color:#fff!important;border:none!important}"
-        "h1,h2,h3,p{color:#c9d1d9!important}"
-    ),
     "Dark Blue": ".stApp,[data-testid='stAppViewContainer']{background:#0d1117!important;color:#c9d1d9!important}[data-testid='stSidebar']{background:#161b22!important}h1,h2,h3,p{color:#58a6ff!important}",
     "Cyan Neon": ".stApp,[data-testid='stAppViewContainer']{background:#000c14!important;color:#00f0ff!important}[data-testid='stSidebar']{background:#001625!important;border-right:1px solid #00f0ff!important}h1,h2,h3,p{color:#00f0ff!important;text-shadow:0 0 4px #00f0ff}div.stButton>button{background:#001625!important;color:#00f0ff!important;border:1px solid #00f0ff!important;box-shadow:0 0 5px #00f0ff}",
     "Dark Green": ".stApp,[data-testid='stAppViewContainer']{background:#0a140d!important;color:#d0e8d7!important}[data-testid='stSidebar']{background:#112216!important}h1,h2,h3,p{color:#4ade80!important}",
@@ -182,32 +172,25 @@ THEMES = {
     "Blood Moon": ".stApp,[data-testid='stAppViewContainer']{background:#050000!important;color:#f33!important}[data-testid='stSidebar']{background:#1a0000!important;border-right:1px solid #f00!important}h1,h2,h3,p{color:#f00!important}",
 }
 
-st.markdown("""
+BASE_CHAT_INPUT_STYLE = (
+    "[data-testid='stChatInput']{background:#2b2b2b!important;border:1px solid #555!important;border-radius:8px!important}"
+    "[data-testid='stChatInput'] textarea{background:transparent!important;border:none!important;color:#fff!important;box-shadow:none!important}"
+    "[data-testid='stChatInput'] button{background:#1f6feb!important;color:#fff!important;border:none!important}"
+    "input,textarea{background:#2b2b2b!important;border:1px solid #555!important;color:#fff!important}"
+    "div.stButton>button{background:#1f6feb!important;color:#fff!important;border:none!important}"
+)
+
+st.markdown(f"""
     <style>
-    footer { visibility: hidden; }
-    .stDeployButton { display: none; }
-    .lightbox { display: none; position: fixed; z-index: 9999; left: 0; top: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.9); text-decoration: none; }
-    .lightbox:target { display: flex; justify-content: center; align-items: center; }
-    .lightbox img { max-width: 95%; max-height: 95%; object-fit: contain; }
-    .close-btn { position: absolute; top: 20px; left: 20px; color: white; font-size: 40px; text-decoration: none; font-weight: bold; }
+    footer {{ visibility: hidden; }}
+    .stDeployButton {{ display: none; }}
+    .lightbox {{ display: none; position: fixed; z-index: 9999; left: 0; top: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.9); text-decoration: none; }}
+    .lightbox:target {{ display: flex; justify-content: center; align-items: center; }}
+    .lightbox img {{ max-width: 95%; max-height: 95%; object-fit: contain; }}
+    .close-btn {{ position: absolute; top: 20px; left: 20px; color: white; font-size: 40px; text-decoration: none; font-weight: bold; }}
     
-    [data-testid="stToggle"] label div {
-        transition: all 0.3s ease !important;
-    }
-    [data-testid="stToggle"] label[aria-checked="true"] div {
-        background: #ff007f !important;
-        box-shadow: 0 0 20px #ff007f, 0 0 40px #ff007f88 !important;
-        animation: pulse 1s infinite;
-    }
-    [data-testid="stToggle"] label[aria-checked="false"] div {
-        background: #555 !important;
-        box-shadow: none !important;
-    }
-    @keyframes pulse {
-        0% { box-shadow: 0 0 20px #ff007f, 0 0 40px #ff007f88; }
-        50% { box-shadow: 0 0 30px #ff00ff, 0 0 60px #ff00ff88; }
-        100% { box-shadow: 0 0 20px #ff007f, 0 0 40px #ff007f88; }
-    }
+    {BASE_CHAT_INPUT_STYLE}
+    h1,h2,h3,p{{color:#c9d1d9!important}}
     </style>
 """, unsafe_allow_html=True)
 
@@ -223,6 +206,7 @@ TRANSLATIONS = {
         "ai_header": "🎨 AI Configuration",
         "tone_label": "Choose Tone:",
         "theme_label": "🎨 App Theme",
+        "neon_label": "💡 Neon Glow",
         "session_header": "🔑 Session Info",
         "active_key": "Active Key:",
         "logout_btn": "🔓 Logout / Clear Session",
@@ -250,6 +234,7 @@ TRANSLATIONS = {
         "ai_header": "🎨 Конфигурация ИИ",
         "tone_label": "Выберите тон:",
         "theme_label": "🎨 Тема приложения",
+        "neon_label": "💡 Неон",
         "session_header": "🔑 Инфо сессии",
         "active_key": "Активный ключ:",
         "logout_btn": "🔓 Выйти / Очистить сессию",
@@ -277,6 +262,7 @@ TRANSLATIONS = {
         "ai_header": "🎨 Конфігурація ШІ",
         "tone_label": "Оберіть тон:",
         "theme_label": "🎨 Тема додатка",
+        "neon_label": "💡 Неон",
         "session_header": "🔑 Інфо сесії",
         "active_key": "Активний ключ:",
         "logout_btn": "🔓 Вийти / Очистити сесію",
@@ -341,6 +327,8 @@ if device_key:
 
 if "current_device_key" not in st.session_state or st.session_state.current_device_key != device_key:
     st.session_state.current_device_key = device_key
+    # Randomize API key on new session
+    st.session_state.active_key_index = random.choice(get_available_key_indices())
     if os.path.exists(file_name):
         try:
             with open(file_name, "r", encoding="utf-8") as f:
@@ -401,7 +389,9 @@ if "thinking_speed" not in st.session_state:
 if "web_search_enabled" not in st.session_state:
     st.session_state.web_search_enabled = True
 if "selected_theme" not in st.session_state:
-    st.session_state.selected_theme = "Default"
+    st.session_state.selected_theme = "Dark Blue"
+if "neon_glow" not in st.session_state:
+    st.session_state.neon_glow = False
 
 st.title(ui["title"])
 
@@ -460,6 +450,7 @@ with st.sidebar:
     ai_tone = st.selectbox(ui["tone_label"], ["Normal", "Humor & Sarcasm", "Storyteller", "Aggressive", "Socrates", "Lazy", "Gamer Pro", "Hyper Nerd", "Pirate", "Shakespeare"])
     st.write(f"### {ui['theme_label']}")
     st.session_state.selected_theme = st.radio("", list(THEMES.keys()), index=list(THEMES.keys()).index(st.session_state.selected_theme))
+    st.session_state.neon_glow = st.toggle(ui["neon_label"], value=st.session_state.neon_glow)
 
     st.divider()
     st.header(ui["session_header"])
@@ -486,8 +477,19 @@ with st.sidebar:
         st.session_state.native_key = None
         st.rerun()
 
+theme_css = THEMES[st.session_state.selected_theme]
+if st.session_state.neon_glow:
+    neon_css = (
+        ".stApp * {text-shadow: 0 0 4px currentColor!important;}"
+        "[data-testid='stChatInput'] {box-shadow: 0 0 12px #00ffff!important;}"
+        "div.stButton>button {box-shadow: 0 0 10px #00ffff!important;}"
+        "[data-testid='stSidebar'] {box-shadow: 0 0 10px #00ffff!important;}"
+    )
+else:
+    neon_css = ""
+
 if st.session_state.selected_theme != "Old":
-    st.markdown(f"<style>{THEMES[st.session_state.selected_theme]}</style>", unsafe_allow_html=True)
+    st.markdown(f"<style>{theme_css} {neon_css}</style>", unsafe_allow_html=True)
 
 messages = st.session_state.all_chats[st.session_state.current_chat]
 
@@ -594,14 +596,18 @@ voice_url = f"https://voicechat-phistashkaai.streamlit.app/?key={device_key}"
 components.html(f"""
 <script>
 (function() {{
+    var micId = 'custom-mic-btn-' + '{st.session_state.selected_theme}';
     function injectMicButton() {{
         var chatInput = window.parent.document.querySelector('[data-testid="stChatInput"]');
         if (!chatInput) return setTimeout(injectMicButton, 200);
         var sendBtn = chatInput.querySelector('button');
         if (!sendBtn) return setTimeout(injectMicButton, 200);
-        if (document.getElementById('custom-mic-btn')) return;
+        var existing = document.getElementById(micId);
+        if (existing) return;
+        var old = document.querySelector('[id^="custom-mic-btn-"]');
+        if (old) old.remove();
         var btn = document.createElement('button');
-        btn.id = 'custom-mic-btn';
+        btn.id = micId;
         btn.innerHTML = '🎙️';
         btn.style = "background: #2b2b2b; border: 1px solid #555; border-radius: 50%; width: 36px; height: 36px; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; margin-left: 6px; transition: all 0.2s; color: white;";
         btn.title = "Open Voice Chat";
@@ -640,7 +646,12 @@ if (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == 
             if "78297829" in str(user_text):
                 system_prompt = DEVELOPER_GUIDE
             else:
-                system_prompt = "You are Phistashka AI, a helpful assistant. Always use emojis and be colorful. Provide information first, details after, your note/help assistance at the end."
+                system_prompt = (
+                    "You are Phistashka AI, a helpful assistant. "
+                    "Always use emojis and be colorful. "
+                    "Provide information first, details after, your response (or reaction)/help assistance at the end. "
+                    "And i'd recommend using search very much, but not always."
+                )
                 if st.session_state.web_search_enabled and model == "llama-3.3-70b-versatile":
                     system_prompt += (
                         "\n\nIf you need real-time or up-to-date information to answer accurately, "
