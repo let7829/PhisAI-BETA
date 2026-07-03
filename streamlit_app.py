@@ -191,31 +191,15 @@ st.markdown(f"""
     {BASE_CHAT_INPUT_STYLE}
     h1,h2,h3,p{{color:#c9d1d9!important}}
 
-    /* Dark blue buttons with darker outline (excludes send and mic) */
-    div.stButton > button {{
-        background: #1a5cc8 !important;
+    button:not([data-testid="stChatInput"] button):not(#custom-mic-btn) {{
+        background: #1e5db5 !important;
         color: #ffffff !important;
-        border: 1px solid #0e3a7d !important;
+        border: 1px solid #143e7a !important;
         border-radius: 8px !important;
     }}
-    div.stButton > button:hover {{
-        background: #0e3a7d !important;
-        border-color: #1a5cc8 !important;
-    }}
-
-    /* Keep chat input send button as original blue */
-    [data-testid="stChatInput"] button {{
-        background: #1f6feb !important;
-        border: none !important;
-    }}
-
-    /* Keep mic button style */
-    [id^="custom-mic-btn-"] {{
-        background: #2b2b2b !important;
-        border: 1px solid #555 !important;
-        border-radius: 50% !important;
-        width: 36px !important;
-        height: 36px !important;
+    button:not([data-testid="stChatInput"] button):not(#custom-mic-btn):hover {{
+        background: #143e7a !important;
+        border-color: #1e5db5 !important;
     }}
     </style>
 """, unsafe_allow_html=True)
@@ -621,25 +605,30 @@ voice_url = f"https://voicechat-phistashkaai.streamlit.app/?key={device_key}"
 components.html(f"""
 <script>
 (function() {{
-    var micId = 'custom-mic-btn-' + '{st.session_state.selected_theme}';
-    function injectMicButton() {{
-        var chatInput = window.parent.document.querySelector('[data-testid="stChatInput"]');
-        if (!chatInput) return setTimeout(injectMicButton, 200);
-        var sendBtn = chatInput.querySelector('button');
-        if (!sendBtn) return setTimeout(injectMicButton, 200);
-        var existing = document.getElementById(micId);
-        if (existing) return;
-        var old = document.querySelector('[id^="custom-mic-btn-"]');
-        if (old) old.remove();
-        var btn = document.createElement('button');
-        btn.id = micId;
-        btn.innerHTML = '🎙️';
-        btn.style = "background: #2b2b2b; border: 1px solid #555; border-radius: 50%; width: 36px; height: 36px; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; margin-left: 6px; transition: all 0.2s; color: white;";
-        btn.title = "Open Voice Chat";
-        btn.onclick = function() {{ window.open('{voice_url}', '_blank'); }};
-        sendBtn.parentNode.insertBefore(btn, sendBtn.nextSibling);
+    const micId = 'custom-mic-btn';
+    function ensureMicButton() {{
+        const chatInput = window.parent.document.querySelector('[data-testid="stChatInput"]');
+        if (!chatInput) return setTimeout(ensureMicButton, 200);
+        const sendBtn = chatInput.querySelector('button');
+        if (!sendBtn) return setTimeout(ensureMicButton, 200);
+        
+        let micBtn = document.getElementById(micId);
+        if (!micBtn) {{
+            micBtn = document.createElement('button');
+            micBtn.id = micId;
+            micBtn.innerHTML = '🎙️';
+            micBtn.style.cssText = "background: #2b2b2b; border: 1px solid #555; border-radius: 50%; width: 36px; height: 36px; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; margin-left: 6px; transition: all 0.2s; color: white;";
+            micBtn.title = "Open Voice Chat";
+            sendBtn.parentNode.insertBefore(micBtn, sendBtn.nextSibling);
+        }}
+        micBtn.onclick = function(e) {{
+            e.preventDefault();
+            window.open('{voice_url}', '_blank');
+        }};
+        micBtn.style.pointerEvents = 'auto';
+        micBtn.style.zIndex = '9999';
     }}
-    injectMicButton();
+    ensureMicButton();
 }})();
 </script>
 """, height=0)
