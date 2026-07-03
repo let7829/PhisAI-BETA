@@ -387,13 +387,31 @@ if "thinking_speed" not in st.session_state:
 if "web_search_enabled" not in st.session_state:
     st.session_state.web_search_enabled = True
 if "selected_theme" not in st.session_state:
-    st.session_state.selected_theme = "Dark Blue"
+    st.session_state.selected_theme = "Amoled Black"
 if "neon_glow" not in st.session_state:
     st.session_state.neon_glow = False
 
 st.title(ui["title"])
 
+voice_url = f"https://voicechat-phistashkaai.streamlit.app/?key={device_key}"
+
 with st.sidebar:
+    st.markdown(f"""
+    <a href="{voice_url}" target="_blank" style="text-decoration:none;">
+        <button style="
+            width:100%;
+            background:#1f6feb;
+            color:white;
+            border:none;
+            padding:8px;
+            border-radius:8px;
+            font-size:16px;
+            cursor:pointer;
+            margin-bottom:10px;
+        ">🎙️ Open Voice Chat</button>
+    </a>
+    """, unsafe_allow_html=True)
+
     st.selectbox(ui["lang_label"], ["English", "Russian", "Ukrainian"], index=["English", "Russian", "Ukrainian"].index(st.session_state.app_lang), key="lang_selector", on_change=on_lang_change)
     st.header(ui["chats_header"])
     if st.button(ui["new_chat_btn"]):
@@ -589,44 +607,6 @@ if prompt:
     st.session_state.all_chats[st.session_state.current_chat].append({"role": "user", "content": msg_content})
     save_chats()
     st.rerun()
-
-voice_url = f"https://voicechat-phistashkaai.streamlit.app/?key={device_key}"
-components.html(f"""
-<script>
-(function() {{
-    if (window.voiceButtonAdded) return;
-    window.voiceButtonAdded = true;
-    
-    const btn = document.createElement('button');
-    btn.id = 'custom-mic-btn';
-    btn.innerHTML = '🎙️';
-    btn.style.cssText = `
-        position: fixed;
-        top: 10px;
-        left: 10px;
-        z-index: 9999;
-        background: black;
-        border: none;
-        font-size: 24px;
-        width: 48px;
-        height: 48px;
-        border-radius: 50%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        cursor: pointer;
-        padding: 0;
-        line-height: 1;
-    `;
-    btn.title = "Open Voice Chat";
-    btn.onclick = function(e) {{
-        e.preventDefault();
-        window.open('{voice_url}', '_blank');
-    }};
-    document.body.appendChild(btn);
-}})();
-</script>
-""", height=0)
 
 if (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "user" and st.session_state.edit_index is None):
     with st.chat_message("assistant"):
