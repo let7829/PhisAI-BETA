@@ -191,16 +191,31 @@ st.markdown(f"""
     {BASE_CHAT_INPUT_STYLE}
     h1,h2,h3,p{{color:#c9d1d9!important}}
 
-    /* Default button styling for all buttons except send and mic */
-    button:not([data-testid="stChatInput"] button):not([id^="custom-mic-btn-"]) {{
-        background: #1f6feb !important;
+    /* Dark blue buttons with darker outline (excludes send and mic) */
+    div.stButton > button {{
+        background: #1a5cc8 !important;
         color: #ffffff !important;
-        border: 1px solid #1550a0 !important;
+        border: 1px solid #0e3a7d !important;
         border-radius: 8px !important;
     }}
-    button:not([data-testid="stChatInput"] button):not([id^="custom-mic-btn-"]):hover {{
-        background: #1550a0 !important;
-        border-color: #1f6feb !important;
+    div.stButton > button:hover {{
+        background: #0e3a7d !important;
+        border-color: #1a5cc8 !important;
+    }}
+
+    /* Keep chat input send button as original blue */
+    [data-testid="stChatInput"] button {{
+        background: #1f6feb !important;
+        border: none !important;
+    }}
+
+    /* Keep mic button style */
+    [id^="custom-mic-btn-"] {{
+        background: #2b2b2b !important;
+        border: 1px solid #555 !important;
+        border-radius: 50% !important;
+        width: 36px !important;
+        height: 36px !important;
     }}
     </style>
 """, unsafe_allow_html=True)
@@ -338,7 +353,6 @@ if device_key:
 
 if "current_device_key" not in st.session_state or st.session_state.current_device_key != device_key:
     st.session_state.current_device_key = device_key
-    # Randomize API key on new session
     st.session_state.active_key_index = random.choice(get_available_key_indices())
     if os.path.exists(file_name):
         try:
