@@ -605,30 +605,36 @@ voice_url = f"https://voicechat-phistashkaai.streamlit.app/?key={device_key}"
 components.html(f"""
 <script>
 (function() {{
-    const micId = 'custom-mic-btn';
-    function ensureMicButton() {{
-        const chatInput = window.parent.document.querySelector('[data-testid="stChatInput"]');
-        if (!chatInput) return setTimeout(ensureMicButton, 200);
-        const sendBtn = chatInput.querySelector('button');
-        if (!sendBtn) return setTimeout(ensureMicButton, 200);
-        
-        let micBtn = document.getElementById(micId);
-        if (!micBtn) {{
-            micBtn = document.createElement('button');
-            micBtn.id = micId;
-            micBtn.innerHTML = '🎙️';
-            micBtn.style.cssText = "background: #2b2b2b; border: 1px solid #555; border-radius: 50%; width: 36px; height: 36px; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; margin-left: 6px; transition: all 0.2s; color: white;";
-            micBtn.title = "Open Voice Chat";
-            sendBtn.parentNode.insertBefore(micBtn, sendBtn.nextSibling);
-        }}
-        micBtn.onclick = function(e) {{
-            e.preventDefault();
-            window.open('{voice_url}', '_blank');
-        }};
-        micBtn.style.pointerEvents = 'auto';
-        micBtn.style.zIndex = '9999';
-    }}
-    ensureMicButton();
+    if (window.voiceButtonAdded) return;
+    window.voiceButtonAdded = true;
+    
+    const btn = document.createElement('button');
+    btn.id = 'custom-mic-btn';
+    btn.innerHTML = '🎙️';
+    btn.style.cssText = `
+        position: fixed;
+        top: 10px;
+        left: 10px;
+        z-index: 9999;
+        background: black;
+        border: none;
+        font-size: 24px;
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        padding: 0;
+        line-height: 1;
+    `;
+    btn.title = "Open Voice Chat";
+    btn.onclick = function(e) {{
+        e.preventDefault();
+        window.open('{voice_url}', '_blank');
+    }};
+    document.body.appendChild(btn);
 }})();
 </script>
 """, height=0)
