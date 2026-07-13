@@ -47,7 +47,8 @@ def init_token_tracking():
     today = datetime.now().date()
     for idx in range(1, 6):
         if idx not in st.session_state.key_usage:
-            st.session_state.key_usage[idx] = {"tokens_today": 0, "last_reset": today}        else:
+            st.session_state.key_usage[idx] = {"tokens_today": 0, "last_reset": today}        
+        else:
             if st.session_state.key_usage[idx]["last_reset"] != today:
                 st.session_state.key_usage[idx]["tokens_today"] = 0
                 st.session_state.key_usage[idx]["last_reset"] = today
@@ -95,8 +96,8 @@ def simulate_thinking(speed):
     delay_range = delays.get(speed, (1.5, 3.0))
     thinking_container = st.empty()
     thinking_container.markdown("💭 **Thinking...**")
-    time.sleep(random.uniform(delay_range[0], delay_range[1]))
-    thinking_container.empty()
+    time.sleep(random.uniform(delay_range[0], delay_range[1]))    thinking_container.empty()
+
 def generate_reasoning_steps(prompt, tone, client):
     reasoning_prompt = f"""
     <task>
@@ -144,8 +145,8 @@ components.html("""
     metaStatus.content = 'black-translucent';
     document.head.appendChild(metaStatus);
     const metaMobile = document.createElement('meta');
-    metaMobile.name = 'mobile-web-app-capable';
-    metaMobile.content = 'yes';    document.head.appendChild(metaMobile);
+    metaMobile.name = 'mobile-web-app-capable';    metaMobile.content = 'yes';
+    document.head.appendChild(metaMobile);
     </script>
 """, height=0)
 
@@ -193,8 +194,8 @@ TRANSLATIONS = {
         "title": "Phistashka AI",
         "input_label": "Enter Existing Private Key:",
         "gen_btn": "🚀 New User? Generate Key & Start Chatting",
-        "info_locked": "🔒 Enter your key to load history.",
-        "chats_header": "Chats",        "new_chat_btn": "➕ New Chat",
+        "info_locked": "🔒 Enter your key to load history.",        "chats_header": "Chats",
+        "new_chat_btn": "➕ New Chat",
         "rename_label": "Rename:",
         "ai_header": "🎨 AI Configuration",
         "tone_label": "Choose Tone:",
@@ -242,8 +243,8 @@ TRANSLATIONS = {
         "web_search_help": "Позволить ИИ запрашивать поиск в интернете, когда нужна актуальная информация",
         "ai_settings_tab": "⚙️ Настройки ИИ",
         "gallery_tab": "🖼 Галерея",
-        "camera_tab": "📷 Камера"
-    },    "Ukrainian": {
+        "camera_tab": "📷 Камера"    },
+    "Ukrainian": {
         "title": "Фісташка ШІ",
         "input_label": "Введіть існуючий приватний ключ:",
         "gen_btn": "🚀 Новий користувач? Створити ключ та почати чат",
@@ -340,8 +341,8 @@ else:
         if os.path.exists(file_name):
             try:
                 with open(file_name, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-                for chat, msgs in raw.items():                    cleaned = []
+                    raw = json.load(f)                for chat, msgs in raw.items():
+                    cleaned = []
                     for m in msgs:
                         if isinstance(m, dict) and "role" in m and "content" in m:
                             cleaned.append(m)
@@ -389,8 +390,8 @@ with st.sidebar:
             width:100%;
             background:#1f6feb;
             color:white;
-            border:none;
-            padding:8px;            border-radius:8px;
+            border:none;            padding:8px;
+            border-radius:8px;
             font-size:16px;
             cursor:pointer;
             margin-bottom:10px;
@@ -438,8 +439,8 @@ with st.sidebar:
                     st.rerun()
             with col_del:
                 if st.button("🗑", key=f"del_{chat_name}"):
-                    del st.session_state.all_chats[chat_name]
-                    if not st.session_state.all_chats:                        fallback = "Chat 1" if st.session_state.app_lang == "English" else "Чат 1"
+                    del st.session_state.all_chats[chat_name]                    if not st.session_state.all_chats:
+                        fallback = "Chat 1" if st.session_state.app_lang == "English" else "Чат 1"
                         st.session_state.all_chats = {fallback: []}
                     if st.session_state.current_chat == chat_name or st.session_state.current_chat not in st.session_state.all_chats:
                         st.session_state.current_chat = list(st.session_state.all_chats.keys())[0]
@@ -536,8 +537,8 @@ for i, message in enumerate(messages):
                         st.markdown(content)
     else:
         with st.chat_message("assistant"):
-            st.markdown(message["content"])
-            if "meta" in message:                meta = message["meta"]
+            st.markdown(message["content"])            if "meta" in message:
+                meta = message["meta"]
                 st.caption(f"⏱️ {meta['response_time']:.2f}s  |  🕒 {meta['timestamp']}  |  ⚡ {meta['tokens_per_sec']:.1f} tok/s  |  🔢 {meta['total_tokens']} tokens")
 
 with st.expander("📎 Attach", expanded=False):
@@ -585,8 +586,8 @@ prompt = st.chat_input(st.session_state.placeholder_text)
 
 if prompt:
     st.session_state.placeholder_text = random.choice(ui["phrases"])
-    st.session_state.api_switch_attempts = 0
-    msg_content = prompt    st.session_state.all_chats[st.session_state.current_chat].append({"role": "user", "content": msg_content})
+    st.session_state.api_switch_attempts = 0    msg_content = prompt
+    st.session_state.all_chats[st.session_state.current_chat].append({"role": "user", "content": msg_content})
     save_chats()
     st.rerun()
 
@@ -683,8 +684,8 @@ if (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == 
             st.session_state.key_usage[st.session_state.active_key_index]["tokens_today"] += total_tokens
 
             elapsed = end_time - start_time
-            tokens_per_sec = total_tokens / elapsed if elapsed > 0 else 0
-            timestamp_str = datetime.now().strftime("%H:%M:%S")
+            tokens_per_sec = total_tokens / elapsed if elapsed > 0 else 0            timestamp_str = datetime.now().strftime("%H:%M:%S")
+
             st.markdown(response_text)
             st.caption(f"⏱️ {elapsed:.2f}s  |  🕒 {timestamp_str}  |  ⚡ {tokens_per_sec:.1f} tok/s  |  🔢 {total_tokens} tokens")
 
