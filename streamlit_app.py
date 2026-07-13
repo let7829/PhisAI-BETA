@@ -11,7 +11,7 @@ import time
 import urllib.parse
 import requests
 from bs4 import BeautifulSoup
-
+from duckduckgo_search import DDGS
 
 def get_groq_client():
     if "active_key_index" not in st.session_state:
@@ -19,14 +19,12 @@ def get_groq_client():
     key_name = f"GROQ_API_KEY_{st.session_state.active_key_index}"
     return Groq(api_key=st.secrets[key_name])
 
-
 def get_available_key_indices():
     available = []
     for i in range(1, 6):
         if f"GROQ_API_KEY_{i}" in st.secrets:
             available.append(i)
     return available if available else [1]
-
 
 def switch_api_key():
     available = get_available_key_indices()
@@ -40,10 +38,8 @@ def switch_api_key():
     else:
         st.session_state.active_key_index = available[0]
 
-
 if "active_key_index" not in st.session_state:
     st.session_state.active_key_index = random.choice(get_available_key_indices())
-
 
 def init_token_tracking():
     if "key_usage" not in st.session_state:
@@ -51,59 +47,30 @@ def init_token_tracking():
     today = datetime.now().date()
     for idx in range(1, 6):
         if idx not in st.session_state.key_usage:
-            st.session_state.key_usage[idx] = {"tokens_today": 0, "last_reset": today}
-        else:
+            st.session_state.key_usage[idx] = {"tokens_today": 0, "last_reset": today}        else:
             if st.session_state.key_usage[idx]["last_reset"] != today:
                 st.session_state.key_usage[idx]["tokens_today"] = 0
                 st.session_state.key_usage[idx]["last_reset"] = today
-
 
 def get_daily_limit_for_model(model):
     if "llama-4-scout" in model:
         return 500_000
     return 100_000
 
-
 def get_time_until_reset():
     now = datetime.utcnow()
     midnight = datetime(now.year, now.month, now.day, 0, 0, 0) + timedelta(days=1)
     return midnight - now
 
-
 def web_search(query, num_results=10):
     try:
-        url = "https://html.duckduckgo.com/html/"
-        params = {"q": query}
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-        resp = requests.get(url, params=params, headers=headers, timeout=10)
-        soup = BeautifulSoup(resp.text, "html.parser")
-        results = []
-        for item in soup.select(".result")[:num_results]:
-            title_tag = item.select_one(".result__title a")
-            snippet_tag = item.select_one(".result__snippet")
-            if not title_tag:
-                continue
-            title = title_tag.get_text(strip=True)
-            link = title_tag["href"]
-            snippet = snippet_tag.get_text(strip=True) if snippet_tag else ""
-            results.append({"title": title, "link": link, "snippet": snippet})
-        if not results:
-            for item in soup.select(".result__body")[:num_results]:
-                title_tag = item.select_one(".result__title a")
-                snippet_tag = item.select_one(".result__snippet")
-                if title_tag:
-                    title = title_tag.get_text(strip=True)
-                    link = title_tag["href"]
-                    snippet = snippet_tag.get_text(strip=True) if snippet_tag else ""
-                    results.append({"title": title, "link": link, "snippet": snippet})
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=num_results))
         if not results:
             return [{"title": "No results", "link": "", "snippet": "No results found"}]
-        return results
+        return [{"title": r["title"], "link": r["href"], "snippet": r["body"]} for r in results]
     except Exception as e:
         return [{"title": "Search error", "link": "", "snippet": str(e)}]
-
 
 def fetch_url(url, max_chars=2000):
     try:
@@ -119,7 +86,6 @@ def fetch_url(url, max_chars=2000):
     except Exception as e:
         return f"❌ Could not fetch URL: {e}"
 
-
 def simulate_thinking(speed):
     delays = {
         "Fast": (0.8, 1.5),
@@ -131,7 +97,37 @@ def simulate_thinking(speed):
     thinking_container.markdown("💭 **Thinking...**")
     time.sleep(random.uniform(delay_range[0], delay_range[1]))
     thinking_container.empty()
+def generate_reasoning_steps(prompt, tone, client):
+    reasoning_prompt = f"""
+    <task>
+    Analyze this user request step-by-step internally before responding:
+    "{prompt}"
+    </task>
 
+    <instructions>
+    1. First, identify what type of request this is (question, task, creative, etc.)
+    2. Break down the key components needed to address it
+    3. Consider what tone '{tone}' means for the response style
+    4. Plan the structure of the final response
+    5. Generate internal thoughts only - no final answer yet
+    </instructions>
+
+    Respond with your internal reasoning in this format:
+    [THOUGHT] Your step-by-step analysis [/THOUGHT]
+    """
+    
+    reasoning_response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": reasoning_prompt}],
+        temperature=0.1
+    )
+    
+    reasoning = reasoning_response.choices[0].message.content
+    import re
+    thought_match = re.search(r'\[THOUGHT\](.*?)\[/THOUGHT\]', reasoning, re.DOTALL)
+    if thought_match:
+        return thought_match.group(1).strip()
+    return "Analyzing request structure and response strategy..."
 
 init_token_tracking()
 
@@ -149,8 +145,7 @@ components.html("""
     document.head.appendChild(metaStatus);
     const metaMobile = document.createElement('meta');
     metaMobile.name = 'mobile-web-app-capable';
-    metaMobile.content = 'yes';
-    document.head.appendChild(metaMobile);
+    metaMobile.content = 'yes';    document.head.appendChild(metaMobile);
     </script>
 """, height=0)
 
@@ -199,8 +194,7 @@ TRANSLATIONS = {
         "input_label": "Enter Existing Private Key:",
         "gen_btn": "🚀 New User? Generate Key & Start Chatting",
         "info_locked": "🔒 Enter your key to load history.",
-        "chats_header": "Chats",
-        "new_chat_btn": "➕ New Chat",
+        "chats_header": "Chats",        "new_chat_btn": "➕ New Chat",
         "rename_label": "Rename:",
         "ai_header": "🎨 AI Configuration",
         "tone_label": "Choose Tone:",
@@ -249,8 +243,7 @@ TRANSLATIONS = {
         "ai_settings_tab": "⚙️ Настройки ИИ",
         "gallery_tab": "🖼 Галерея",
         "camera_tab": "📷 Камера"
-    },
-    "Ukrainian": {
+    },    "Ukrainian": {
         "title": "Фісташка ШІ",
         "input_label": "Введіть існуючий приватний ключ:",
         "gen_btn": "🚀 Новий користувач? Створити ключ та почати чат",
@@ -283,10 +276,8 @@ TRANSLATIONS = {
 if "app_lang" not in st.session_state:
     st.session_state.app_lang = "English"
 
-
 def on_lang_change():
     st.session_state.app_lang = st.session_state.lang_selector
-
 
 if "native_key" not in st.session_state:
     st.session_state.native_key = None
@@ -301,7 +292,6 @@ else:
     device_key = None
 
 ui = TRANSLATIONS[st.session_state.app_lang]
-
 if not device_key:
     st.title(ui["title"])
     st.caption(ui["lang_caption"])
@@ -351,8 +341,7 @@ else:
             try:
                 with open(file_name, "r", encoding="utf-8") as f:
                     raw = json.load(f)
-                for chat, msgs in raw.items():
-                    cleaned = []
+                for chat, msgs in raw.items():                    cleaned = []
                     for m in msgs:
                         if isinstance(m, dict) and "role" in m and "content" in m:
                             cleaned.append(m)
@@ -367,12 +356,10 @@ else:
     if "current_chat" not in st.session_state or st.session_state.current_chat not in st.session_state.all_chats:
         st.session_state.current_chat = list(st.session_state.all_chats.keys())[0]
 
-
 def save_chats():
     if "all_chats" in st.session_state and device_key:
         with open(file_name, "w", encoding="utf-8") as f:
             json.dump(st.session_state.all_chats, f, ensure_ascii=False)
-
 
 if "edit_index" not in st.session_state:
     st.session_state.edit_index = None
@@ -403,8 +390,7 @@ with st.sidebar:
             background:#1f6feb;
             color:white;
             border:none;
-            padding:8px;
-            border-radius:8px;
+            padding:8px;            border-radius:8px;
             font-size:16px;
             cursor:pointer;
             margin-bottom:10px;
@@ -453,8 +439,7 @@ with st.sidebar:
             with col_del:
                 if st.button("🗑", key=f"del_{chat_name}"):
                     del st.session_state.all_chats[chat_name]
-                    if not st.session_state.all_chats:
-                        fallback = "Chat 1" if st.session_state.app_lang == "English" else "Чат 1"
+                    if not st.session_state.all_chats:                        fallback = "Chat 1" if st.session_state.app_lang == "English" else "Чат 1"
                         st.session_state.all_chats = {fallback: []}
                     if st.session_state.current_chat == chat_name or st.session_state.current_chat not in st.session_state.all_chats:
                         st.session_state.current_chat = list(st.session_state.all_chats.keys())[0]
@@ -503,7 +488,6 @@ if st.session_state.neon_glow:
     )
 else:
     neon_css = ""
-
 if st.session_state.selected_theme != "Old":
     st.markdown(f"<style>{theme_css} {neon_css}</style>", unsafe_allow_html=True)
 
@@ -553,8 +537,7 @@ for i, message in enumerate(messages):
     else:
         with st.chat_message("assistant"):
             st.markdown(message["content"])
-            if "meta" in message:
-                meta = message["meta"]
+            if "meta" in message:                meta = message["meta"]
                 st.caption(f"⏱️ {meta['response_time']:.2f}s  |  🕒 {meta['timestamp']}  |  ⚡ {meta['tokens_per_sec']:.1f} tok/s  |  🔢 {meta['total_tokens']} tokens")
 
 with st.expander("📎 Attach", expanded=False):
@@ -603,17 +586,13 @@ prompt = st.chat_input(st.session_state.placeholder_text)
 if prompt:
     st.session_state.placeholder_text = random.choice(ui["phrases"])
     st.session_state.api_switch_attempts = 0
-    msg_content = prompt
-    st.session_state.all_chats[st.session_state.current_chat].append({"role": "user", "content": msg_content})
+    msg_content = prompt    st.session_state.all_chats[st.session_state.current_chat].append({"role": "user", "content": msg_content})
     save_chats()
     st.rerun()
 
 if (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "user" and st.session_state.edit_index is None):
     with st.chat_message("assistant"):
         try:
-            if st.session_state.thinking_mode_enabled:
-                simulate_thinking(st.session_state.thinking_speed)
-
             client = get_groq_client()
             last_msg_content = messages[-1]["content"]
 
@@ -656,14 +635,19 @@ if (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == 
                 if model == "llama-3.3-70b-versatile" and isinstance(m_c, list):
                     m_c = next((item["text"] for item in m_c if item["type"] == "text"), "")
                 api_messages.append({"role": msg["role"], "content": m_c})
-
             m_content = messages[-1]["content"]
             if model == "llama-3.3-70b-versatile" and isinstance(m_content, list):
                 text_part = next((item["text"] for item in m_content if item["type"] == "text"), "")
                 m_content = f"[User previously attached an image. Image guidelines: If the image is NSFW/illegal then reject it, describe it, then put a note/help offer at end. If its a quiz/test/question, answer/solve it, put answer at top.] {text_part}"
             api_messages.append({"role": messages[-1]["role"], "content": m_content})
 
-            start_time = time.time()
+            if st.session_state.thinking_mode_enabled:
+                reasoning = generate_reasoning_steps(user_text, ai_tone, client)
+                st.markdown(f"🧠 *Thinking:* {reasoning}")
+                simulate_thinking(st.session_state.thinking_speed)
+            else:
+                start_time = time.time()
+
             completion = client.chat.completions.create(model=model, messages=api_messages)
             response_text = completion.choices[0].message.content
 
@@ -701,7 +685,6 @@ if (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == 
             elapsed = end_time - start_time
             tokens_per_sec = total_tokens / elapsed if elapsed > 0 else 0
             timestamp_str = datetime.now().strftime("%H:%M:%S")
-
             st.markdown(response_text)
             st.caption(f"⏱️ {elapsed:.2f}s  |  🕒 {timestamp_str}  |  ⚡ {tokens_per_sec:.1f} tok/s  |  🔢 {total_tokens} tokens")
 
