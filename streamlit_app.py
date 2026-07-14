@@ -124,7 +124,7 @@ def fetch_url(url, max_chars=2000):
 
 
 def extract_files_from_response(response_text):
-    binary_pattern = r'\[BINARY_FILE:\s*(.*?)\]\s*\n(.*?)\n\s*\[END_BINARY_FILE\]'
+    binary_pattern = r'\[BINARY_FILE:\s*(.*?)\]\s*(.*?)\s*\[END_BINARY_FILE\]'
     binary_matches = re.findall(binary_pattern, response_text, re.DOTALL | re.IGNORECASE)
     binary_files = []
     for filename, content in binary_matches:
@@ -136,7 +136,7 @@ def extract_files_from_response(response_text):
 
     text_after_binary = re.sub(binary_pattern, '', response_text, flags=re.DOTALL | re.IGNORECASE)
 
-    text_pattern = r'\[FILE:\s*(.*?)\]\s*\n(.*?)\n\s*\[END_FILE\]'
+    text_pattern = r'\[FILE:\s*(.*?)\]\s*(.*?)\s*\[END_FILE\]'
     text_matches = re.findall(text_pattern, text_after_binary, re.DOTALL | re.IGNORECASE)
     text_files = [(filename.strip(), content.strip().encode()) for filename, content in text_matches]
 
