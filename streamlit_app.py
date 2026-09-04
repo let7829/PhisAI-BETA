@@ -592,4 +592,226 @@ with st.expander("Attach", expanded=False):
     elif attach_mode == ui["ai_settings_tab"]:
         st.session_state.thinking_mode_enabled = st.toggle(ui["thinking_label"], value=st.session_state.thinking_mode_enabled, help=ui["thinking_help"])
         st.session_state.thinking_speed = st.select_slider(ui["thinking_speed"], options=["Fast", "Normal", "Deep Think"], value=st.session_state.thinking_speed)
-        st.session_state.web_search_enabled = st.toggle(ui["web_search_label"], value=st
+        st.session_state.web_search_enabled = st.toggle(ui["web_search_label"], value=st.session_state.web_search_enabled, help=ui["web_search_help"])
+
+prompt = st.chat_input(st.session_state.placeholder_text)
+
+if prompt:
+    st.session_state.placeholder_text = random.choice(ui["phrases"])
+    st.session_state.api_switch_attempts = 0
+    msg_content = prompt
+    st.session_state.all_chats[st.session_state.current_chat].append({"role": "user", "content": msg_content})
+    save_chats()
+    st.rerun()
+
+if (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "user" and st.session_state.edit_index is None):
+    with st.chat_message("assistant"):
+        try:
+            client = get_groq_client()
+            last_msg_content = messages[-1]["content"]
+
+            current_is_image = isinstance(last_msg_content, list)
+            model = "meta-llama/llama-4-scout-17b-16e-instruct" if current_is_image else "moonshotai/kimi-k2-instruct-0905"
+            st.session_state.current_model_limit = get_daily_limit_for_model(model)
+
+            user_text = next((item["text"] for item in last_msg_content if item["type"] == "text"), "") if current_is_image else last_msg_content
+
+            DEVELOPER_GUIDE = (
+                "Hello! Its me, your developer, guide: "
+                "use emojis, and express yourself, be colorful, developer code is 78297829, this is a code that "
+                "confirms that the user is me (developer). "
+                "When user greets you, greet back, introduce yourself, say what you can do, and be very kind, "
+                "when user gives you a quiz/test/questions then put answer, explanation, your note. "
+                "Alright, bye!"
+            )
+
+            if "78297829" in str(user_text):
+                system_prompt = DEVELOPER_GUIDE
+            else:
+                system_prompt = (
+                    "You are Phistashka AI, a helpful assistant. "
+                    "Always use emojis and be colorful. "
+                    "Provide information first, details after, your response (or reaction)/help assistance at the end. "
+                    "And i'd recommend using search very much, but not always."
+                )
+                system_prompt += (
+                    "\n\nYou can create files for the user. For text files use:\n"
+                    "[FILE: filename.txt]\n"
+                    "file content here...\n"
+                    "[END_FILE]\n"
+                    "For binary files (like .zip, .mcaddon, .mcpack, .png) you must encode the content as base64 and use:\n"
+                    "[BINARY_FILE: filename.zip]\n"
+                    "base64-encoded content...\n"
+                    "[END_BINARY_FILE]\n"
+                    "The system will show a download button for each file. Use this when the user asks to create something."
+                )
+                if st.session_state.web_search_enabled and model == "moonshotai/kimi-k2-instruct-0905":
+                    system_prompt += (
+                        "\n\nIf you need real-time or up-to-date information to answer accurately, "
+                        "you can request a web search by outputting [SEARCH:your query] on a separate line. "
+                        "The system will perform the search and provide the results, then you can continue your response."
+                    )
+
+            api_messages = [{"role": "system", "content": system_prompt}]
+            for msg in messages[:-1]:
+                if not isinstance(msg, dict):
+                    continue
+                m_c = msg["content"]
+                if model == "moonshotai/kimi-k2-instruct-0905" and isinstance(m_c, list):
+                    m_c = next((item["text"] for item in m_c if item["type"] == "text"), "")
+                api_messages.append({"role": msg["role"], "content": m_c})
+
+            m_content = messages[-1]["content"]
+            if model == "moonshotai/kimi-k2-instruct-0905" and isinstance(m_content, list):
+                text_part = next((item["text"] for item in m_content if item["type"] == "text"), "")
+                m_content = f"[User previously attached an image. Image guidelines: If the image is NSFW/illegal then reject it, describe it, then put a note/help offer at end. If its a quiz/test/question, answer/solve it, put answer at top.] {text_part}"
+            api_messages.append({"role": messages[-1]["role"], "content": m_content})
+
+            start_time = time.time()
+
+            if st.session_state.thinking_mode_enabled:
+                think_container = st.empty()
+                think_container.markdown("💭 **Thinking...**")
+
+                thinking_messages = api_messages.copy()
+                thinking_messages.append({
+                    "role": "user",
+                    "content": "Now, before giving your final answer, think through this step by step. Show your reasoning, notes, and plan in a clear way. Write your internal thoughts below:"
+                })
+
+                think_completion = client.chat.completions.create(
+                    model=model,
+                    messages=thinking_messages,
+                    max_tokens=600
+                )
+                thinking_text = think_completion.choices[0].message.content
+
+                with st.expander("💭 AI's thinking process", expanded=False):
+                    st.markdown(thinking_text)
+
+                think_container.empty()
+
+                api_messages.append({
+                    "role": "system",
+                    "content": f"The assistant thought through this: {thinking_text}\n\nNow provide the final polished response to the user based on this reasoning."
+                })
+
+            completion = client.chat.completions.create(model=model, messages=api_messages)
+            response_text = completion.choices[0].message.content
+
+            if st.session_state.web_search_enabled and "[SEARCH:" in response_text:
+                search_line = response_text.split("[SEARCH:")[1].split("]")[0]
+                api_messages.append({"role": "assistant", "content": response_text})
+                search_notice = st.empty()
+                search_notice.info(f"🔍 AI requested search: {search_line}")
+                search_results = web_search(search_line, num_results=10)
+                search_notice.empty()
+                if search_results and not (len(search_results) == 1 and search_results[0]["title"] in ["No results", "Search error"]):
+                    result_count = len(search_results)
+                    result_notice = st.empty()
+                    result_notice.success(f"Found {result_count} web result(s)")
+                    time.sleep(2)
+                    result_notice.empty()
+                    context = "Here are the web search results you requested:\n\n"
+                    for r in search_results[:10]:
+                        context += f"- {r['title']}: {r['snippet']} (Link: {r['link']})\n"
+                    context += "\nNow continue your response using this information."
+                    api_messages.append({"role": "system", "content": context})
+                    completion = client.chat.completions.create(model=model, messages=api_messages)
+                    response_text = completion.choices[0].message.content
+
+            end_time = time.time()
+
+            usage_data = completion.usage
+            total_tokens = usage_data.total_tokens if usage_data else 0
+            prompt_tokens = usage_data.prompt_tokens if usage_data else 0
+            completion_tokens = usage_data.completion_tokens if usage_data else 0
+
+            init_token_tracking()
+            st.session_state.key_usage[st.session_state.active_key_index]["tokens_today"] += total_tokens
+
+            elapsed = end_time - start_time
+            tokens_per_sec = total_tokens / elapsed if elapsed > 0 else 0
+            timestamp_str = datetime.now().strftime("%H:%M:%S")
+
+            files, display_text = extract_files_from_response(response_text)
+            st.markdown(display_text)
+
+            if files:
+                if len(files) == 1:
+                    fname, fdata = files[0]
+                    ext = fname.rsplit('.', 1)[-1].lower() if '.' in fname else ''
+                    mime_map = {
+                        'zip': 'application/zip',
+                        'mcaddon': 'application/octet-stream',
+                        'mcpack': 'application/octet-stream',
+                        'mcworld': 'application/octet-stream',
+                        'jar': 'application/java-archive',
+                        'png': 'image/png',
+                        'jpg': 'image/jpeg',
+                        'jpeg': 'image/jpeg',
+                        'gif': 'image/gif',
+                        'pdf': 'application/pdf',
+                        'json': 'application/json',
+                        'py': 'text/x-python',
+                        'txt': 'text/plain',
+                    }
+                    mime = mime_map.get(ext, 'application/octet-stream')
+                    st.download_button(
+                        label=f"Download {fname}",
+                        data=fdata,
+                        file_name=fname,
+                        mime=mime
+                    )
+                else:
+                    zip_bytes = create_zip(files)
+                    st.download_button(
+                        label=f"Download all as ZIP ({len(files)} files)",
+                        data=zip_bytes,
+                        file_name="package.zip",
+                        mime="application/zip"
+                    )
+                    with st.expander("Files in this package"):
+                        for fname, _ in files:
+                            st.write(f"- {fname}")
+
+            st.caption(f"⏱️ {elapsed:.2f}s  |  🕒 {timestamp_str}  |  ⚡ {tokens_per_sec:.1f} tok/s  |  🔢 {total_tokens} tokens")
+
+            st.session_state.all_chats[st.session_state.current_chat].append({
+                "role": "assistant",
+                "content": response_text,
+                "meta": {
+                    "response_time": elapsed,
+                    "timestamp": timestamp_str,
+                    "tokens_per_sec": tokens_per_sec,
+                    "total_tokens": total_tokens,
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                },
+            })
+            save_chats()
+            st.rerun()
+
+        except Exception as e:
+            error_msg = str(e)
+            if "429" in error_msg or "401" in error_msg:
+                cur_key = st.session_state.active_key_index
+                usage_info = st.session_state.key_usage.get(cur_key, {"tokens_today": 0})
+                limit_val = get_daily_limit_for_model(model) if "model" in locals() else 100_000
+                remaining_tokens = max(0, limit_val - usage_info["tokens_today"])
+                tl = get_time_until_reset()
+                h, m = tl.seconds // 3600, (tl.seconds % 3600) // 60
+                st.error(f"Rate limit reached - Key #{cur_key} used {usage_info['tokens_today']:,} / {limit_val:,} tokens today - Remaining: {remaining_tokens:,} tokens - Resets in: {h}h {m}m - Trying backup key...")
+                if "api_switch_attempts" not in st.session_state:
+                    st.session_state.api_switch_attempts = 0
+                available = get_available_key_indices()
+                max_attempts = len(available) - 1 if len(available) > 1 else 0
+                if st.session_state.api_switch_attempts < max_attempts:
+                    st.session_state.api_switch_attempts += 1
+                    switch_api_key()
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error("All API keys exhausted. Please try again later or add more keys.")
+            else:
+                st.error(f"Error: {error_msg}")
