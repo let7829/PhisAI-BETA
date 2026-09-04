@@ -15,13 +15,11 @@ import re
 import zipfile
 import io
 
-
 def get_groq_client():
     if "active_key_index" not in st.session_state:
         st.session_state.active_key_index = random.choice(get_available_key_indices())
     key_name = f"GROQ_API_KEY_{st.session_state.active_key_index}"
     return Groq(api_key=st.secrets[key_name])
-
 
 def get_available_key_indices():
     available = []
@@ -29,7 +27,6 @@ def get_available_key_indices():
         if f"GROQ_API_KEY_{i}" in st.secrets:
             available.append(i)
     return available if available else [1]
-
 
 def switch_api_key():
     available = get_available_key_indices()
@@ -43,10 +40,8 @@ def switch_api_key():
     else:
         st.session_state.active_key_index = available[0]
 
-
 if "active_key_index" not in st.session_state:
     st.session_state.active_key_index = random.choice(get_available_key_indices())
-
 
 def init_token_tracking():
     if "key_usage" not in st.session_state:
@@ -60,18 +55,15 @@ def init_token_tracking():
                 st.session_state.key_usage[idx]["tokens_today"] = 0
                 st.session_state.key_usage[idx]["last_reset"] = today
 
-
 def get_daily_limit_for_model(model):
     if "llama-4-scout" in model:
         return 500_000
     return 100_000
 
-
 def get_time_until_reset():
     now = datetime.utcnow()
     midnight = datetime(now.year, now.month, now.day, 0, 0, 0) + timedelta(days=1)
     return midnight - now
-
 
 def web_search(query, num_results=10):
     try:
@@ -107,7 +99,6 @@ def web_search(query, num_results=10):
     except Exception as e:
         return [{"title": "Search error", "link": "", "snippet": str(e)}]
 
-
 def fetch_url(url, max_chars=2000):
     try:
         response = requests.get(url, timeout=5, headers={
@@ -120,8 +111,7 @@ def fetch_url(url, max_chars=2000):
         text = ' '.join(text.split())
         return text[:max_chars]
     except Exception as e:
-        return f"❌ Could not fetch URL: {e}"
-
+        return f"Could not fetch URL: {e}"
 
 def extract_files_from_response(response_text):
     binary_pattern = r'\[BINARY_FILE:\s*(.*?)\]\s*(.*?)\s*\[END_BINARY_FILE\]'
@@ -133,18 +123,17 @@ def extract_files_from_response(response_text):
             binary_files.append((filename.strip(), decoded))
         except Exception:
             binary_files.append((filename.strip(), content.strip().encode()))
-
+    
     text_after_binary = re.sub(binary_pattern, '', response_text, flags=re.DOTALL | re.IGNORECASE)
-
+    
     text_pattern = r'\[FILE:\s*(.*?)\]\s*(.*?)\s*\[END_FILE\]'
     text_matches = re.findall(text_pattern, text_after_binary, re.DOTALL | re.IGNORECASE)
     text_files = [(filename.strip(), content.strip().encode()) for filename, content in text_matches]
-
+    
     clean_text = re.sub(text_pattern, '', text_after_binary, flags=re.DOTALL | re.IGNORECASE).strip()
-
+    
     all_files = binary_files + text_files
     return all_files, clean_text
-
 
 def create_zip(files):
     buf = io.BytesIO()
@@ -153,7 +142,6 @@ def create_zip(files):
             zf.writestr(fname, data)
     buf.seek(0)
     return buf.read()
-
 
 init_token_tracking()
 
@@ -209,96 +197,94 @@ TRANSLATIONS = {
     "English": {
         "title": "Phistashka AI",
         "input_label": "Enter Existing Private Key:",
-        "gen_btn": "🚀 New User? Generate Key & Start Chatting",
-        "info_locked": "🔒 Enter your key to load history.",
+        "gen_btn": "New User? Generate Key & Start Chatting",
+        "info_locked": "Enter your key to load history.",
         "chats_header": "Chats",
-        "new_chat_btn": "➕ New Chat",
+        "new_chat_btn": "New Chat",
         "rename_label": "Rename:",
-        "ai_header": "🎨 AI Configuration",
+        "ai_header": "AI Configuration",
         "tone_label": "Choose Tone:",
-        "theme_label": "🎨 App Theme",
-        "neon_label": "💡 Neon Glow",
-        "session_header": "🔑 Session Info",
+        "theme_label": "App Theme",
+        "neon_label": "Neon Glow",
+        "session_header": "Session Info",
         "active_key": "Active Key:",
-        "logout_btn": "🔓 Logout / Clear Session",
+        "logout_btn": "Logout / Clear Session",
         "phrases": ["Say hello!", "Say hi!", "Welcome!", "Type here!", "Ready to chat!", "Write something cool!"],
-        "lang_label": "🌐 App Language",
-        "lang_caption": "🌐 Change language",
-        "photo_sent": "📷 Photo sent",
-        "thinking_label": "💭 Thinking Mode",
+        "lang_label": "App Language",
+        "lang_caption": "Change language",
+        "photo_sent": "Photo sent",
+        "thinking_label": "Thinking Mode",
         "thinking_help": "AI will reason step by step before answering",
-        "thinking_speed": "⏱ Thinking Depth",
-        "web_search_label": "🌐 Web Search",
+        "thinking_speed": "Thinking Depth",
+        "web_search_label": "Web Search",
         "web_search_help": "Let AI request web searches when it needs real-time info",
-        "ai_settings_tab": "⚙️ AI Settings",
-        "gallery_tab": "🖼 Gallery",
-        "camera_tab": "📷 Camera"
+        "ai_settings_tab": "AI Settings",
+        "gallery_tab": "Gallery",
+        "camera_tab": "Camera"
     },
     "Russian": {
         "title": "Фисташка ИИ",
         "input_label": "Введите существующий приватный ключ:",
-        "gen_btn": "🚀 Новый пользователь? Создать ключ и начать чат",
-        "info_locked": "🔒 Введите свой ключ, чтобы загрузить историю.",
+        "gen_btn": "Новый пользователь? Создать ключ и начать чат",
+        "info_locked": "Введите свой ключ, чтобы загрузить историю.",
         "chats_header": "Чаты",
-        "new_chat_btn": "➕ Новый чат",
+        "new_chat_btn": "Новый чат",
         "rename_label": "Переименовать:",
-        "ai_header": "🎨 Конфигурация ИИ",
+        "ai_header": "Конфигурация ИИ",
         "tone_label": "Выберите тон:",
-        "theme_label": "🎨 Тема приложения",
-        "neon_label": "💡 Неон",
-        "session_header": "🔑 Инфо сессии",
+        "theme_label": "Тема приложения",
+        "neon_label": "Неон",
+        "session_header": "Инфо сессии",
         "active_key": "Активный ключ:",
-        "logout_btn": "🔓 Выйти / Очистить сессию",
+        "logout_btn": "Выйти / Очистить сессию",
         "phrases": ["Скажи привет!", "Привет!", "Добро пожаловать!", "Пиши тут!", "Готов к общению!", "Напиши что-то крутое!"],
-        "lang_label": "🌐 Язык приложения",
-        "lang_caption": "🌐 Поменять язык",
-        "photo_sent": "📷 Фото отправлено",
-        "thinking_label": "💭 Режим размышления",
+        "lang_label": "Язык приложения",
+        "lang_caption": "Поменять язык",
+        "photo_sent": "Фото отправлено",
+        "thinking_label": "Режим размышления",
         "thinking_help": "ИИ будет рассуждать пошагово перед ответом",
-        "thinking_speed": "⏱ Глубина размышления",
-        "web_search_label": "🌐 Веб-поиск",
+        "thinking_speed": "Глубина размышления",
+        "web_search_label": "Веб-поиск",
         "web_search_help": "Позволить ИИ запрашивать поиск в интернете, когда нужна актуальная информация",
-        "ai_settings_tab": "⚙️ Настройки ИИ",
-        "gallery_tab": "🖼 Галерея",
-        "camera_tab": "📷 Камера"
+        "ai_settings_tab": "Настройки ИИ",
+        "gallery_tab": "Галерея",
+        "camera_tab": "Камера"
     },
     "Ukrainian": {
         "title": "Фісташка ШІ",
         "input_label": "Введіть існуючий приватний ключ:",
-        "gen_btn": "🚀 Новий користувач? Створити ключ та почати чат",
-        "info_locked": "🔒 Введіть свій ключ, щоб завантажити історію.",
+        "gen_btn": "Новий користувач? Створити ключ та почати чат",
+        "info_locked": "Введіть свій ключ, щоб завантажити історію.",
         "chats_header": "Чати",
-        "new_chat_btn": "➕ Новий чат",
+        "new_chat_btn": "Новий чат",
         "rename_label": "Перейменувати:",
-        "ai_header": "🎨 Конфігурація ШІ",
+        "ai_header": "Конфігурація ШІ",
         "tone_label": "Оберіть тон:",
-        "theme_label": "🎨 Тема додатка",
-        "neon_label": "💡 Неон",
-        "session_header": "🔑 Інфо сесії",
+        "theme_label": "Тема додатка",
+        "neon_label": "Неон",
+        "session_header": "Інфо сесії",
         "active_key": "Активний ключ:",
-        "logout_btn": "🔓 Вийти / Очистити сесію",
+        "logout_btn": "Вийти / Очистити сесію",
         "phrases": ["Скажи привіт!", "Привіт!", "Ласкаво просимо!", "Пиши тут!", "Готовий до спілкування!", "Напиши щось круте!"],
-        "lang_label": "🌐 Мова додатка",
-        "lang_caption": "🌐 Змінити мову",
-        "photo_sent": "📷 Фото надіслано",
-        "thinking_label": "💭 Режим роздумів",
+        "lang_label": "Мова додатка",
+        "lang_caption": "Змінити мову",
+        "photo_sent": "Фото надіслано",
+        "thinking_label": "Режим роздумів",
         "thinking_help": "ШІ буде міркувати покроково перед відповіддю",
-        "thinking_speed": "⏱ Глибина роздумів",
-        "web_search_label": "🌐 Веб-пошук",
+        "thinking_speed": "Глибина роздумів",
+        "web_search_label": "Веб-пошук",
         "web_search_help": "Дозволити ШІ запитувати пошук в інтернеті, коли потрібна актуальна інформація",
-        "ai_settings_tab": "⚙️ Налаштування ШІ",
-        "gallery_tab": "🖼 Галерея",
-        "camera_tab": "📷 Камера"
+        "ai_settings_tab": "Налаштування ШІ",
+        "gallery_tab": "Галерея",
+        "camera_tab": "Камера"
     }
 }
 
 if "app_lang" not in st.session_state:
     st.session_state.app_lang = "English"
 
-
 def on_lang_change():
     st.session_state.app_lang = st.session_state.lang_selector
-
 
 if "native_key" not in st.session_state:
     st.session_state.native_key = None
@@ -379,12 +365,10 @@ else:
     if "current_chat" not in st.session_state or st.session_state.current_chat not in st.session_state.all_chats:
         st.session_state.current_chat = list(st.session_state.all_chats.keys())[0]
 
-
 def save_chats():
     if "all_chats" in st.session_state and device_key:
         with open(file_name, "w", encoding="utf-8") as f:
             json.dump(st.session_state.all_chats, f, ensure_ascii=False)
-
 
 if "edit_index" not in st.session_state:
     st.session_state.edit_index = None
@@ -420,7 +404,7 @@ with st.sidebar:
             font-size:16px;
             cursor:pointer;
             margin-bottom:10px;
-        ">🎙️ Open Voice Chat</button>
+        ">Open Voice Chat</button>
     </a>
     """, unsafe_allow_html=True)
 
@@ -485,7 +469,7 @@ with st.sidebar:
     st.success(f"{ui['active_key']} {device_key}")
     st.info(f"Using API Key #{st.session_state.active_key_index}")
     st.write("---")
-    st.write("**📊 Token Usage (Today)**")
+    st.write("**Token Usage (Today)**")
     available_keys = get_available_key_indices()
     limit_display = st.session_state.get("current_model_limit", 100_000)
     for idx in available_keys:
@@ -496,8 +480,8 @@ with st.sidebar:
     time_left = get_time_until_reset()
     hours = time_left.seconds // 3600
     minutes_left = (time_left.seconds % 3600) // 60
-    st.caption(f"↻ Resets in {hours}h {minutes_left}m")
-    if st.button("🔄 Switch API Key (Manual)"):
+    st.caption(f"Resets in {hours}h {minutes_left}m")
+    if st.button("Switch API Key (Manual)"):
         switch_api_key()
         st.rerun()
     if st.button(ui["logout_btn"]):
@@ -569,7 +553,7 @@ for i, message in enumerate(messages):
                 meta = message["meta"]
                 st.caption(f"⏱️ {meta['response_time']:.2f}s  |  🕒 {meta['timestamp']}  |  ⚡ {meta['tokens_per_sec']:.1f} tok/s  |  🔢 {meta['total_tokens']} tokens")
 
-with st.expander("📎 Attach", expanded=False):
+with st.expander("Attach", expanded=False):
     attach_mode = st.radio(
         "",
         [ui["gallery_tab"], ui["camera_tab"], ui["ai_settings_tab"]],
@@ -585,7 +569,7 @@ with st.expander("📎 Attach", expanded=False):
             st.image(file_bytes, width=120)
             img_b64 = base64.b64encode(file_bytes).decode("utf-8")
             photo_prompt = st.text_input("Add a message (optional):", key=f"photo_prompt_{st.session_state.current_chat}")
-            if st.button("📤 Send Photo", key=f"send_photo_{st.session_state.current_chat}"):
+            if st.button("Send Photo", key=f"send_photo_{st.session_state.current_chat}"):
                 msg_content = [{"type": "text", "text": photo_prompt if photo_prompt else ui["photo_sent"]}, {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}}]
                 st.session_state.all_chats[st.session_state.current_chat].append({"role": "user", "content": msg_content})
                 save_chats()
@@ -596,7 +580,7 @@ with st.expander("📎 Attach", expanded=False):
         if camera_photo is not None:
             st.image(camera_photo, width=120)
             photo_prompt = st.text_input("Add a message (optional):", key=f"cam_prompt_{st.session_state.current_chat}")
-            if st.button("📤 Send Photo", key=f"cam_send_{st.session_state.current_chat}"):
+            if st.button("Send Photo", key=f"cam_send_{st.session_state.current_chat}"):
                 file_bytes = camera_photo.getvalue()
                 img_b64 = base64.b64encode(file_bytes).decode("utf-8")
                 mime = camera_photo.type
@@ -608,226 +592,4 @@ with st.expander("📎 Attach", expanded=False):
     elif attach_mode == ui["ai_settings_tab"]:
         st.session_state.thinking_mode_enabled = st.toggle(ui["thinking_label"], value=st.session_state.thinking_mode_enabled, help=ui["thinking_help"])
         st.session_state.thinking_speed = st.select_slider(ui["thinking_speed"], options=["Fast", "Normal", "Deep Think"], value=st.session_state.thinking_speed)
-        st.session_state.web_search_enabled = st.toggle(ui["web_search_label"], value=st.session_state.web_search_enabled, help=ui["web_search_help"])
-
-prompt = st.chat_input(st.session_state.placeholder_text)
-
-if prompt:
-    st.session_state.placeholder_text = random.choice(ui["phrases"])
-    st.session_state.api_switch_attempts = 0
-    msg_content = prompt
-    st.session_state.all_chats[st.session_state.current_chat].append({"role": "user", "content": msg_content})
-    save_chats()
-    st.rerun()
-
-if (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "user" and st.session_state.edit_index is None):
-    with st.chat_message("assistant"):
-        try:
-            client = get_groq_client()
-            last_msg_content = messages[-1]["content"]
-
-            current_is_image = isinstance(last_msg_content, list)
-            model = "moonshotai/kimi-k2-instruct-0905" if current_is_image else "llama-3.3-70b-versatile"
-            st.session_state.current_model_limit = get_daily_limit_for_model(model)
-
-            user_text = next((item["text"] for item in last_msg_content if item["type"] == "text"), "") if current_is_image else last_msg_content
-
-            DEVELOPER_GUIDE = (
-                "Hello! Its me, your developer, guide: "
-                "use emojis, and express yourself, be colorful, developer code is 78297829, this is a code that "
-                "confirms that the user is me (developer). "
-                "When user greets you, greet back, introduce yourself, say what you can do, and be very kind, "
-                "when user gives you a quiz/test/questions then put answer, explanation, your note. "
-                "Alright, bye!"
-            )
-
-            if "78297829" in str(user_text):
-                system_prompt = DEVELOPER_GUIDE
-            else:
-                system_prompt = (
-                    "You are Phistashka AI, a helpful assistant. "
-                    "Always use emojis and be colorful. "
-                    "Provide information first, details after, your response (or reaction)/help assistance at the end. "
-                    "And i'd recommend using search very much, but not always."
-                )
-                system_prompt += (
-                    "\n\nYou can create files for the user. For text files use:\n"
-                    "[FILE: filename.txt]\n"
-                    "file content here...\n"
-                    "[END_FILE]\n"
-                    "For binary files (like .zip, .mcaddon, .mcpack, .png) you must encode the content as base64 and use:\n"
-                    "[BINARY_FILE: filename.zip]\n"
-                    "base64-encoded content...\n"
-                    "[END_BINARY_FILE]\n"
-                    "The system will show a download button for each file. Use this when the user asks to create something."
-                )
-                if st.session_state.web_search_enabled and model == "moonshotai/kimi-k2-instruct-0905":
-                    system_prompt += (
-                        "\n\nIf you need real-time or up-to-date information to answer accurately, "
-                        "you can request a web search by outputting [SEARCH:your query] on a separate line. "
-                        "The system will perform the search and provide the results, then you can continue your response."
-                    )
-
-            api_messages = [{"role": "system", "content": system_prompt}]
-            for msg in messages[:-1]:
-                if not isinstance(msg, dict):
-                    continue
-                m_c = msg["content"]
-                if model == "llama-3.3-70b-versatile" and isinstance(m_c, list):
-                    m_c = next((item["text"] for item in m_c if item["type"] == "text"), "")
-                api_messages.append({"role": msg["role"], "content": m_c})
-
-            m_content = messages[-1]["content"]
-            if model == "llama-3.3-70b-versatile" and isinstance(m_content, list):
-                text_part = next((item["text"] for item in m_content if item["type"] == "text"), "")
-                m_content = f"[User previously attached an image. Image guidelines: If the image is NSFW/illegal then reject it, describe it, then put a note/help offer at end. If its a quiz/test/question, answer/solve it, put answer at top.] {text_part}"
-            api_messages.append({"role": messages[-1]["role"], "content": m_content})
-
-            start_time = time.time()
-
-            if st.session_state.thinking_mode_enabled:
-                think_container = st.empty()
-                think_container.markdown("💭 **Thinking...**")
-
-                thinking_messages = api_messages.copy()
-                thinking_messages.append({
-                    "role": "user",
-                    "content": "Now, before giving your final answer, think through this step by step. Show your reasoning, notes, and plan in a clear way. Write your internal thoughts below:"
-                })
-
-                think_completion = client.chat.completions.create(
-                    model=model,
-                    messages=thinking_messages,
-                    max_tokens=600
-                )
-                thinking_text = think_completion.choices[0].message.content
-
-                with st.expander("💭 AI's thinking process", expanded=False):
-                    st.markdown(thinking_text)
-
-                think_container.empty()
-
-                api_messages.append({
-                    "role": "system",
-                    "content": f"The assistant thought through this: {thinking_text}\n\nNow provide the final polished response to the user based on this reasoning."
-                })
-
-            completion = client.chat.completions.create(model=model, messages=api_messages)
-            response_text = completion.choices[0].message.content
-
-            if st.session_state.web_search_enabled and "[SEARCH:" in response_text:
-                search_line = response_text.split("[SEARCH:")[1].split("]")[0]
-                api_messages.append({"role": "assistant", "content": response_text})
-                search_notice = st.empty()
-                search_notice.info(f"🔍 AI requested search: {search_line}")
-                search_results = web_search(search_line, num_results=10)
-                search_notice.empty()
-                if search_results and not (len(search_results) == 1 and search_results[0]["title"] in ["No results", "Search error"]):
-                    result_count = len(search_results)
-                    result_notice = st.empty()
-                    result_notice.success(f"Found {result_count} web result(s)")
-                    time.sleep(2)
-                    result_notice.empty()
-                    context = "Here are the web search results you requested:\n\n"
-                    for r in search_results[:10]:
-                        context += f"- {r['title']}: {r['snippet']} (Link: {r['link']})\n"
-                    context += "\nNow continue your response using this information."
-                    api_messages.append({"role": "system", "content": context})
-                    completion = client.chat.completions.create(model=model, messages=api_messages)
-                    response_text = completion.choices[0].message.content
-
-            end_time = time.time()
-
-            usage_data = completion.usage
-            total_tokens = usage_data.total_tokens if usage_data else 0
-            prompt_tokens = usage_data.prompt_tokens if usage_data else 0
-            completion_tokens = usage_data.completion_tokens if usage_data else 0
-
-            init_token_tracking()
-            st.session_state.key_usage[st.session_state.active_key_index]["tokens_today"] += total_tokens
-
-            elapsed = end_time - start_time
-            tokens_per_sec = total_tokens / elapsed if elapsed > 0 else 0
-            timestamp_str = datetime.now().strftime("%H:%M:%S")
-
-            files, display_text = extract_files_from_response(response_text)
-            st.markdown(display_text)
-
-            if files:
-                if len(files) == 1:
-                    fname, fdata = files[0]
-                    ext = fname.rsplit('.', 1)[-1].lower() if '.' in fname else ''
-                    mime_map = {
-                        'zip': 'application/zip',
-                        'mcaddon': 'application/octet-stream',
-                        'mcpack': 'application/octet-stream',
-                        'mcworld': 'application/octet-stream',
-                        'jar': 'application/java-archive',
-                        'png': 'image/png',
-                        'jpg': 'image/jpeg',
-                        'jpeg': 'image/jpeg',
-                        'gif': 'image/gif',
-                        'pdf': 'application/pdf',
-                        'json': 'application/json',
-                        'py': 'text/x-python',
-                        'txt': 'text/plain',
-                    }
-                    mime = mime_map.get(ext, 'application/octet-stream')
-                    st.download_button(
-                        label=f"📥 Download {fname}",
-                        data=fdata,
-                        file_name=fname,
-                        mime=mime
-                    )
-                else:
-                    zip_bytes = create_zip(files)
-                    st.download_button(
-                        label=f"📦 Download all as ZIP ({len(files)} files)",
-                        data=zip_bytes,
-                        file_name="package.zip",
-                        mime="application/zip"
-                    )
-                    with st.expander("📁 Files in this package"):
-                        for fname, _ in files:
-                            st.write(f"- {fname}")
-
-            st.caption(f"⏱️ {elapsed:.2f}s  |  🕒 {timestamp_str}  |  ⚡ {tokens_per_sec:.1f} tok/s  |  🔢 {total_tokens} tokens")
-
-            st.session_state.all_chats[st.session_state.current_chat].append({
-                "role": "assistant",
-                "content": response_text,
-                "meta": {
-                    "response_time": elapsed,
-                    "timestamp": timestamp_str,
-                    "tokens_per_sec": tokens_per_sec,
-                    "total_tokens": total_tokens,
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                },
-            })
-            save_chats()
-            st.rerun()
-
-        except Exception as e:
-            error_msg = str(e)
-            if "429" in error_msg or "401" in error_msg:
-                cur_key = st.session_state.active_key_index
-                usage_info = st.session_state.key_usage.get(cur_key, {"tokens_today": 0})
-                limit_val = get_daily_limit_for_model(model) if "model" in locals() else 100_000
-                remaining_tokens = max(0, limit_val - usage_info["tokens_today"])
-                tl = get_time_until_reset()
-                h, m = tl.seconds // 3600, (tl.seconds % 3600) // 60
-                st.error(f"🚫 **Rate limit reached**\n\n- Key #{cur_key} used `{usage_info['tokens_today']:,}` / {limit_val:,} tokens today\n- Remaining: {remaining_tokens:,} tokens\n- Resets in: {h}h {m}m\n\nTrying backup key...")
-                if "api_switch_attempts" not in st.session_state:
-                    st.session_state.api_switch_attempts = 0
-                available = get_available_key_indices()
-                max_attempts = len(available) - 1 if len(available) > 1 else 0
-                if st.session_state.api_switch_attempts < max_attempts:
-                    st.session_state.api_switch_attempts += 1
-                    switch_api_key()
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.error("❌ All API keys exhausted. Please try again later or add more keys.")
-            else:
-                st.error(f"Error: {error_msg}")
+        st.session_state.web_search_enabled = st.toggle(ui["web_search_label"], value=st
