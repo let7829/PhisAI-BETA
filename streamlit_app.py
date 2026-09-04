@@ -627,7 +627,7 @@ if (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == 
             last_msg_content = messages[-1]["content"]
 
             current_is_image = isinstance(last_msg_content, list)
-            model = "meta-llama/llama-4-scout-17b-16e-instruct" if current_is_image else "llama-3.3-70b-versatile"
+            model = "moonshotai/kimi-k2-instruct-0905" if current_is_image else "llama-3.3-70b-versatile"
             st.session_state.current_model_limit = get_daily_limit_for_model(model)
 
             user_text = next((item["text"] for item in last_msg_content if item["type"] == "text"), "") if current_is_image else last_msg_content
@@ -661,7 +661,7 @@ if (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == 
                     "[END_BINARY_FILE]\n"
                     "The system will show a download button for each file. Use this when the user asks to create something."
                 )
-                if st.session_state.web_search_enabled and model == "llama-3.3-70b-versatile":
+                if st.session_state.web_search_enabled and model = "moonshotai/kimi-k2-instruct-0905":
                     system_prompt += (
                         "\n\nIf you need real-time or up-to-date information to answer accurately, "
                         "you can request a web search by outputting [SEARCH:your query] on a separate line. "
