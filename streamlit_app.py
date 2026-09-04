@@ -661,7 +661,7 @@ if (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == 
                     "[END_BINARY_FILE]\n"
                     "The system will show a download button for each file. Use this when the user asks to create something."
                 )
-                if st.session_state.web_search_enabled and model = "moonshotai/kimi-k2-instruct-0905":
+                if st.session_state.web_search_enabled and model == "moonshotai/kimi-k2-instruct-0905":
                     system_prompt += (
                         "\n\nIf you need real-time or up-to-date information to answer accurately, "
                         "you can request a web search by outputting [SEARCH:your query] on a separate line. "
