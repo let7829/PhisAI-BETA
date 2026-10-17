@@ -662,7 +662,7 @@ if (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == 
                 api_messages.append({"role": msg["role"], "content": m_c})
 
             m_content = messages[-1]["content"]
-            if model == #openai/gpt-oss-20b" and isinstance(m_content, list):
+            if model == openai/gpt-oss-20b" and isinstance(m_content, list):
                 text_part = next((item["text"] for item in m_content if item["type"] == "text"), "")
                 m_content = f"[User previously attached an image. Image guidelines: If the image is NSFW/illegal then reject it, describe it, then put a note/help offer at end. If its a quiz/test/question, answer/solve it, put answer at top.] {text_part}"
             api_messages.append({"role": messages[-1]["role"], "content": m_content})
