@@ -657,7 +657,7 @@ if (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == 
                 if not isinstance(msg, dict):
                     continue
                 m_c = msg["content"]
-                if model == "moonshotai/kimi-k2-instruct-0905" and isinstance(m_c, list):
+                if model == "qwen3.8-27b" and isinstance(m_c, list):
                     m_c = next((item["text"] for item in m_c if item["type"] == "text"), "")
                 api_messages.append({"role": msg["role"], "content": m_c})
 
