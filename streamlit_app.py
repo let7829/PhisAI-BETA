@@ -1,817 +1,1395 @@
 import streamlit as st
-import streamlit.components.v1 as components
-from groq import Groq
-import base64
-import hashlib
-import random
-from datetime import datetime, timedelta
-import json
-import os
-import time
-import urllib.parse
-import requests
+import streamlit.components.v2 as components
+from groq import Groq, NotFoundError
+import random, time, html as H, json, uuid, os, sqlite3, hashlib
+from datetime import datetime
+from pathlib import Path
+from ddgs import DDGS
+from ddgs.exceptions import DDGSException
+from curl_cffi import requests as cffi_requests
 from bs4 import BeautifulSoup
-import re
-import zipfile
-import io
+from urllib.parse import quote, unquote
 
-def get_groq_client():
-    if "active_key_index" not in st.session_state:
-        st.session_state.active_key_index = random.choice(get_available_key_indices())
-    key_name = f"GROQ_API_KEY_{st.session_state.active_key_index}"
-    return Groq(api_key=st.secrets[key_name])
+st.set_page_config(page_title="Strafe AI", page_icon="https://raw.githubusercontent.com/let7829/Strafe-ai/refs/heads/main/logo.png", layout="centered")
 
-def get_available_key_indices():
-    available = []
-    for i in range(1, 6):
-        if f"GROQ_API_KEY_{i}" in st.secrets:
-            available.append(i)
-    return available if available else [1]
+SEND_GLYPH = "\u2794"
+MENU_GLYPH = "\u22ef"
+CLOSE_GLYPH = "\u2715"
+PLUS_GLYPH = "\uff0b"
 
-def switch_api_key():
-    available = get_available_key_indices()
-    if not available:
-        return
-    current = st.session_state.active_key_index
-    if current in available:
-        idx = available.index(current)
-        next_idx = (idx + 1) % len(available)
-        st.session_state.active_key_index = available[next_idx]
-    else:
-        st.session_state.active_key_index = available[0]
+DB_PATH = Path(os.environ.get("STRAFE_DB", "strafe.db"))
 
-if "active_key_index" not in st.session_state:
-    st.session_state.active_key_index = random.choice(get_available_key_indices())
+def _db():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-def init_token_tracking():
-    if "key_usage" not in st.session_state:
-        st.session_state.key_usage = {}
-    today = datetime.now().date()
-    for idx in range(1, 6):
-        if idx not in st.session_state.key_usage:
-            st.session_state.key_usage[idx] = {"tokens_today": 0, "last_reset": today}
-        else:
-            if st.session_state.key_usage[idx]["last_reset"] != today:
-                st.session_state.key_usage[idx]["tokens_today"] = 0
-                st.session_state.key_usage[idx]["last_reset"] = today
+def db_init():
+    with _db() as c:
+        c.executescript("""
+            CREATE TABLE IF NOT EXISTS users (
+                email TEXT PRIMARY KEY,
+                created REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS chats (
+                id TEXT PRIMARY KEY,
+                email TEXT NOT NULL,
+                title TEXT NOT NULL,
+                messages TEXT NOT NULL,
+                created REAL NOT NULL,
+                updated REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_chats_email_updated ON chats(email, updated DESC);
+            CREATE TABLE IF NOT EXISTS settings (
+                email TEXT PRIMARY KEY,
+                language TEXT NOT NULL DEFAULT 'en',
+                model TEXT NOT NULL DEFAULT 'groq'
+            );
+        """)
 
-def get_daily_limit_for_model(model):
-    if "llama-4-scout" in model:
-        return 500_000
-    return 100_000
+def db_upsert_user(email):
+    with _db() as c:
+        c.execute("INSERT OR IGNORE INTO users(email, created) VALUES(?, ?)", (email, time.time()))
 
-def get_time_until_reset():
-    now = datetime.utcnow()
-    midnight = datetime(now.year, now.month, now.day, 0, 0, 0) + timedelta(days=1)
-    return midnight - now
-
-def web_search(query, num_results=10):
-    try:
-        url = "https://html.duckduckgo.com/html/"
-        params = {"q": query}
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+def db_get_chats(email):
+    with _db() as c:
+        rows = c.execute(
+            "SELECT id, title, messages, created, updated FROM chats WHERE email=? ORDER BY updated DESC",
+            (email,),
+        ).fetchall()
+    out = {}
+    for r in rows:
+        out[r["id"]] = {
+            "id": r["id"],
+            "title": r["title"],
+            "messages": json.loads(r["messages"]),
+            "created": r["created"],
+            "updated": r["updated"],
         }
-        resp = requests.get(url, params=params, headers=headers, timeout=10)
-        soup = BeautifulSoup(resp.text, "html.parser")
-        results = []
-        for item in soup.select(".result")[:num_results]:
-            title_tag = item.select_one(".result__title a")
-            snippet_tag = item.select_one(".result__snippet")
-            if not title_tag:
-                continue
-            title = title_tag.get_text(strip=True)
-            link = title_tag["href"]
-            snippet = snippet_tag.get_text(strip=True) if snippet_tag else ""
-            results.append({"title": title, "link": link, "snippet": snippet})
-        if not results:
-            for item in soup.select(".result__body")[:num_results]:
-                title_tag = item.select_one(".result__title a")
-                snippet_tag = item.select_one(".result__snippet")
-                if title_tag:
-                    title = title_tag.get_text(strip=True)
-                    link = title_tag["href"]
-                    snippet = snippet_tag.get_text(strip=True) if snippet_tag else ""
-                    results.append({"title": title, "link": link, "snippet": snippet})
-        if not results:
-            return [{"title": "No results", "link": "", "snippet": "No results found"}]
-        return results
-    except Exception as e:
-        return [{"title": "Search error", "link": "", "snippet": str(e)}]
+    return out
 
-def fetch_url(url, max_chars=2000):
-    try:
-        response = requests.get(url, timeout=5, headers={
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
-        soup = BeautifulSoup(response.text, 'html.parser')
-        for script in soup(["script", "style"]):
-            script.decompose()
-        text = soup.get_text(separator=' ', strip=True)
-        text = ' '.join(text.split())
-        return text[:max_chars]
-    except Exception as e:
-        return f"Could not fetch URL: {e}"
+def db_save_chat(email, chat):
+    with _db() as c:
+        c.execute(
+            """INSERT INTO chats(id, email, title, messages, created, updated)
+               VALUES(?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 title=excluded.title,
+                 messages=excluded.messages,
+                 updated=excluded.updated""",
+            (chat["id"], email, chat["title"], json.dumps(chat["messages"]),
+             chat.get("created", time.time()), chat.get("updated", time.time())),
+        )
 
-def extract_files_from_response(response_text):
-    binary_pattern = r'\[BINARY_FILE:\s*(.*?)\]\s*(.*?)\s*\[END_BINARY_FILE\]'
-    binary_matches = re.findall(binary_pattern, response_text, re.DOTALL | re.IGNORECASE)
-    binary_files = []
-    for filename, content in binary_matches:
-        try:
-            decoded = base64.b64decode(content.strip())
-            binary_files.append((filename.strip(), decoded))
-        except Exception:
-            binary_files.append((filename.strip(), content.strip().encode()))
-    
-    text_after_binary = re.sub(binary_pattern, '', response_text, flags=re.DOTALL | re.IGNORECASE)
-    
-    text_pattern = r'\[FILE:\s*(.*?)\]\s*(.*?)\s*\[END_FILE\]'
-    text_matches = re.findall(text_pattern, text_after_binary, re.DOTALL | re.IGNORECASE)
-    text_files = [(filename.strip(), content.strip().encode()) for filename, content in text_matches]
-    
-    clean_text = re.sub(text_pattern, '', text_after_binary, flags=re.DOTALL | re.IGNORECASE).strip()
-    
-    all_files = binary_files + text_files
-    return all_files, clean_text
+def db_delete_chat(email, chat_id):
+    with _db() as c:
+        c.execute("DELETE FROM chats WHERE id=? AND email=?", (chat_id, email))
 
-def create_zip(files):
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for fname, data in files:
-            zf.writestr(fname, data)
-    buf.seek(0)
-    return buf.read()
+def db_delete_all_chats(email):
+    with _db() as c:
+        c.execute("DELETE FROM chats WHERE email=?", (email,))
 
-init_token_tracking()
+def db_get_settings(email):
+    with _db() as c:
+        row = c.execute("SELECT language, model FROM settings WHERE email=?", (email,)).fetchone()
+    if row is None:
+        return {"language": "en", "model": "groq"}
+    return {"language": row["language"], "model": row["model"]}
 
-st.set_page_config(page_title="Phistashka AI")
+def db_set_settings(email, language=None, model=None):
+    cur = db_get_settings(email)
+    language = language or cur["language"]
+    model = model or cur["model"]
+    with _db() as c:
+        c.execute(
+            """INSERT INTO settings(email, language, model) VALUES(?, ?, ?)
+               ON CONFLICT(email) DO UPDATE SET language=excluded.language, model=excluded.model""",
+            (email, language, model),
+        )
 
-components.html("""
-    <script>
-    const metaApp = document.createElement('meta');
-    metaApp.name = 'apple-mobile-web-app-capable';
-    metaApp.content = 'yes';
-    document.head.appendChild(metaApp);
-    const metaStatus = document.createElement('meta');
-    metaStatus.name = 'apple-mobile-web-app-status-bar-style';
-    metaStatus.content = 'black-translucent';
-    document.head.appendChild(metaStatus);
-    const metaMobile = document.createElement('meta');
-    metaMobile.name = 'mobile-web-app-capable';
-    metaMobile.content = 'yes';
-    document.head.appendChild(metaMobile);
-    </script>
-""", height=0)
+db_init()
 
-THEMES = {
-    "Old": "",
-    "Dark Blue": ".stApp,[data-testid='stAppViewContainer']{background:#0d1117!important;color:#c9d1d9!important}[data-testid='stSidebar']{background:#161b22!important}h1,h2,h3,p{color:#58a6ff!important}",
-    "Cyan Neon": ".stApp,[data-testid='stAppViewContainer']{background:#000c14!important;color:#00f0ff!important}[data-testid='stSidebar']{background:#001625!important;border-right:1px solid #00f0ff!important}h1,h2,h3,p{color:#00f0ff!important;text-shadow:0 0 4px #00f0ff}div.stButton>button{background:#001625!important;color:#00f0ff!important;border:1px solid #00f0ff!important;box-shadow:0 0 5px #00f0ff}",
-    "Dark Green": ".stApp,[data-testid='stAppViewContainer']{background:#0a140d!important;color:#d0e8d7!important}[data-testid='stSidebar']{background:#112216!important}h1,h2,h3,p{color:#4ade80!important}",
-    "Dark Red": ".stApp,[data-testid='stAppViewContainer']{background:#140a0a!important;color:#f8d7d7!important}[data-testid='stSidebar']{background:#221111!important}h1,h2,h3,p{color:#f87171!important}",
-    "Aurora": ".stApp,[data-testid='stAppViewContainer']{background:linear-gradient(135deg,#0f172a,#1e1b4b,#311042)!important;color:#e2e8f0!important}[data-testid='stSidebar']{background:#0f172a!important}h1,h2,h3,p{color:#c084fc!important}",
-    "Cyberpunk": ".stApp,[data-testid='stAppViewContainer']{background:#000!important;color:#00ffcc!important}[data-testid='stSidebar']{background:#1a001a!important;border-right:1px solid #ff007f!important}h1,h2,h3,p{color:#ff007f!important;text-shadow:0 0 4px #ff007f}div.stButton>button{background:#1a001a!important;color:#ff007f!important;border:1px solid #ff007f!important;box-shadow:0 0 5px #ff007f}",
-    "Matrix": ".stApp,[data-testid='stAppViewContainer']{background:#000!important;color:#0f0!important;font-family:'Courier New',monospace!important}[data-testid='stSidebar']{background:#001100!important}h1,h2,h3,p{color:#3f3!important}",
-    "Amoled Black": ".stApp,[data-testid='stAppViewContainer']{background:#000!important;color:#fff!important}[data-testid='stSidebar']{background:#000!important;border-right:1px solid #333!important}h1,h2,h3,p{color:#fff!important}",
-    "Sakura": ".stApp,[data-testid='stAppViewContainer']{background:#1f1116!important;color:#ffd1dc!important}[data-testid='stSidebar']{background:#2d161f!important}h1,h2,h3,p{color:#ff69b4!important}",
-    "Dracula": ".stApp,[data-testid='stAppViewContainer']{background:#282a36!important;color:#f8f8f2!important}[data-testid='stSidebar']{background:#21222c!important}h1,h2,h3,p{color:#ff79c6!important}",
-    "Sunset": ".stApp,[data-testid='stAppViewContainer']{background:linear-gradient(180deg,#1a0c2e,#4c1d24)!important;color:#fed7aa!important}[data-testid='stSidebar']{background:#1a0c2e!important}h1,h2,h3,p{color:#fb923c!important}",
-    "Ocean Breeze": ".stApp,[data-testid='stAppViewContainer']{background:#031b24!important;color:#e0f2fe!important}[data-testid='stSidebar']{background:#04293a!important}h1,h2,h3,p{color:#38bdf8!important}",
-    "Synthwave": ".stApp,[data-testid='stAppViewContainer']{background:linear-gradient(180deg,#2b00ff,#ff007f)!important;color:#0ff!important}[data-testid='stSidebar']{background:#1a0033!important;border-right:2px solid #0ff!important}h1,h2,h3,p{color:#ff007f!important;text-shadow:2px 2px #000}div.stButton>button{background:#1a0033!important;color:#0ff!important;border:1px solid #0ff!important}",
-    "Blood Moon": ".stApp,[data-testid='stAppViewContainer']{background:#050000!important;color:#f33!important}[data-testid='stSidebar']{background:#1a0000!important;border-right:1px solid #f00!important}h1,h2,h3,p{color:#f00!important}",
-}
-
-st.markdown("""
-    <style>
-    footer { visibility: hidden; }
-    .stDeployButton { display: none; }
-    .lightbox { display: none; position: fixed; z-index: 9999; left: 0; top: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.9); text-decoration: none; }
-    .lightbox:target { display: flex; justify-content: center; align-items: center; }
-    .lightbox img { max-width: 95%; max-height: 95%; object-fit: contain; }
-    .close-btn { position: absolute; top: 20px; left: 20px; color: white; font-size: 40px; text-decoration: none; font-weight: bold; }
-    </style>
-""", unsafe_allow_html=True)
-
-TRANSLATIONS = {
-    "English": {
-        "title": "Phistashka AI",
-        "input_label": "Enter Existing Private Key:",
-        "gen_btn": "New User? Generate Key & Start Chatting",
-        "info_locked": "Enter your key to load history.",
-        "chats_header": "Chats",
-        "new_chat_btn": "New Chat",
-        "rename_label": "Rename:",
-        "ai_header": "AI Configuration",
-        "tone_label": "Choose Tone:",
-        "theme_label": "App Theme",
-        "neon_label": "Neon Glow",
-        "session_header": "Session Info",
-        "active_key": "Active Key:",
-        "logout_btn": "Logout / Clear Session",
-        "phrases": ["Say hello!", "Say hi!", "Welcome!", "Type here!", "Ready to chat!", "Write something cool!"],
-        "lang_label": "App Language",
-        "lang_caption": "Change language",
-        "photo_sent": "Photo sent",
-        "thinking_label": "Thinking Mode",
-        "thinking_help": "AI will reason step by step before answering",
-        "thinking_speed": "Thinking Depth",
-        "web_search_label": "Web Search",
-        "web_search_help": "Let AI request web searches when it needs real-time info",
-        "ai_settings_tab": "AI Settings",
-        "gallery_tab": "Gallery",
-        "camera_tab": "Camera"
-    },
-    "Russian": {
-        "title": "Фисташка ИИ",
-        "input_label": "Введите существующий приватный ключ:",
-        "gen_btn": "Новый пользователь? Создать ключ и начать чат",
-        "info_locked": "Введите свой ключ, чтобы загрузить историю.",
-        "chats_header": "Чаты",
-        "new_chat_btn": "Новый чат",
-        "rename_label": "Переименовать:",
-        "ai_header": "Конфигурация ИИ",
-        "tone_label": "Выберите тон:",
-        "theme_label": "Тема приложения",
-        "neon_label": "Неон",
-        "session_header": "Инфо сессии",
-        "active_key": "Активный ключ:",
-        "logout_btn": "Выйти / Очистить сессию",
-        "phrases": ["Скажи привет!", "Привет!", "Добро пожаловать!", "Пиши тут!", "Готов к общению!", "Напиши что-то крутое!"],
-        "lang_label": "Язык приложения",
-        "lang_caption": "Поменять язык",
-        "photo_sent": "Фото отправлено",
-        "thinking_label": "Режим размышления",
-        "thinking_help": "ИИ будет рассуждать пошагово перед ответом",
-        "thinking_speed": "Глубина размышления",
-        "web_search_label": "Веб-поиск",
-        "web_search_help": "Позволить ИИ запрашивать поиск в интернете, когда нужна актуальная информация",
-        "ai_settings_tab": "Настройки ИИ",
-        "gallery_tab": "Галерея",
-        "camera_tab": "Камера"
-    },
-    "Ukrainian": {
-        "title": "Фісташка ШІ",
-        "input_label": "Введіть існуючий приватний ключ:",
-        "gen_btn": "Новий користувач? Створити ключ та почати чат",
-        "info_locked": "Введіть свій ключ, щоб завантажити історію.",
-        "chats_header": "Чати",
-        "new_chat_btn": "Новий чат",
-        "rename_label": "Перейменувати:",
-        "ai_header": "Конфігурація ШІ",
-        "tone_label": "Оберіть тон:",
-        "theme_label": "Тема додатка",
-        "neon_label": "Неон",
-        "session_header": "Інфо сесії",
-        "active_key": "Активний ключ:",
-        "logout_btn": "Вийти / Очистити сесію",
-        "phrases": ["Скажи привіт!", "Привіт!", "Ласкаво просимо!", "Пиши тут!", "Готовий до спілкування!", "Напиши щось круте!"],
-        "lang_label": "Мова додатка",
-        "lang_caption": "Змінити мову",
-        "photo_sent": "Фото надіслано",
-        "thinking_label": "Режим роздумів",
-        "thinking_help": "ШІ буде міркувати покроково перед відповіддю",
-        "thinking_speed": "Глибина роздумів",
-        "web_search_label": "Веб-пошук",
-        "web_search_help": "Дозволити ШІ запитувати пошук в інтернеті, коли потрібна актуальна інформація",
-        "ai_settings_tab": "Налаштування ШІ",
-        "gallery_tab": "Галерея",
-        "camera_tab": "Камера"
+INPUT_HTML = '<div id="bar"><div id="atts"></div><div id="cb"><input id="ci" type="text" placeholder="Ask something" autocomplete="off"/><button id="pb" type="button" class="icon-btn">' + PLUS_GLYPH + '</button><button id="sb" type="button">' + SEND_GLYPH + '</button></div><div id="tools"><button id="btn-search" type="button" class="tool-btn"><span class="icon">\u2315</span><span class="label">Search</span></button><button id="btn-think" type="button" class="tool-btn"><span class="icon">\u269b</span><span class="label">Think</span></button></div><div id="menu"><button id="mb-photo" type="button" class="menu-btn">Photo</button><button id="mb-camera" type="button" class="menu-btn">Camera</button><button id="mb-file" type="button" class="menu-btn">\u2399 File</button></div></div><div id="cam-overlay"><video id="cam-video" autoplay playsinline muted></video><button id="cam-close" type="button">\u2715</button><button id="cam-capture" type="button"></button><canvas id="cam-canvas" style="display:none"></canvas></div>'
+INPUT_CSS = """
+#bar{position:fixed;bottom:16px;left:0;right:0;padding:0 14px;background:transparent;z-index:999999;box-sizing:border-box;display:flex;flex-direction:column;align-items:center;gap:8px;}
+#atts{display:flex;gap:8px;width:100%;max-width:760px;flex-wrap:wrap;padding-left:4px;box-sizing:border-box;}
+#atts:empty{display:none;}
+.att{position:relative;width:56px;height:56px;border-radius:12px;overflow:hidden;border:1px solid #2a2a2a;flex-shrink:0;}
+.att img{width:100%;height:100%;object-fit:cover;display:block;}
+.att-x{position:absolute;top:2px;right:2px;width:18px;height:18px;border-radius:50%;border:none;background:rgba(0,0,0,0.75);color:#fff;font-size:0.65rem;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;}
+.att-file{position:relative;display:flex;align-items:center;gap:6px;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;padding:8px 12px;font-size:0.8rem;color:#bdbdbd;font-family:'Space Grotesk',sans-serif;max-width:200px;}
+.att-file-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;}
+.att-file-x{width:18px;height:18px;border-radius:50%;border:none;background:rgba(255,255,255,0.1);color:#fff;font-size:0.6rem;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;flex-shrink:0;}
+#tools{display:flex;gap:8px;width:100%;max-width:760px;justify-content:flex-start;padding-left:4px;}
+.tool-btn{height:32px;border-radius:16px;border:1px solid #2a2a2a;background:#1a1a1a;color:#7a7a7a;font-size:0.85rem;cursor:pointer;display:flex;align-items:center;gap:6px;padding:0 12px;transition:all 0.2s;font-family:'Space Grotesk',sans-serif;}
+.tool-btn .icon{font-size:1rem;line-height:1;}
+.tool-btn .label{white-space:nowrap;}
+.tool-btn:hover{color:#fff;border-color:#4f8dff;}
+.tool-btn.active{background:#4f8dff;color:#fff;border-color:#4f8dff;}
+#cb{display:flex;align-items:center;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:28px;padding:10px 14px;gap:8px;width:100%;max-width:760px;margin:0 auto;box-sizing:border-box;box-shadow:0 4px 20px rgba(0,0,0,0.5);}
+#ci{flex:1;background:transparent;border:none;outline:none;color:#fff;font-size:1rem;font-family:'Space Grotesk',sans-serif;padding:8px 4px;}
+#ci::placeholder{color:#6b7280;}
+.icon-btn{width:32px;height:32px;border-radius:50%;border:none;background:transparent;color:#7a7a7a;font-size:1.2rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:color 0.2s;}
+.icon-btn:hover{color:#fff;}
+#sb{width:38px;height:38px;border-radius:50%;border:none;background:#4f8dff;color:#fff;font-size:1.2rem;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+#sb:hover{background:#2563eb;}
+#menu{display:flex;gap:8px;width:100%;max-width:760px;justify-content:flex-start;padding-left:4px;overflow:hidden;max-height:0;opacity:0;transition:max-height 0.25s ease,opacity 0.2s ease;}
+#menu.open{max-height:60px;opacity:1;}
+.menu-btn{height:40px;border-radius:14px;border:1px solid #2a2a2a;background:#1a1a1a;color:#ececec;font-size:0.9rem;padding:0 18px;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.2s;white-space:nowrap;}
+.menu-btn:hover{border-color:#4f8dff;color:#fff;}
+#cam-overlay{display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:#000;z-index:10000000;flex-direction:column;align-items:center;justify-content:flex-end;}
+#cam-overlay.active{display:flex;}
+#cam-video{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;}
+#cam-close{position:absolute;top:16px;right:16px;width:40px;height:40px;border-radius:50%;border:none;background:rgba(0,0,0,0.5);color:#fff;font-size:1.4rem;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:10000001;}
+#cam-capture{width:72px;height:72px;border-radius:50%;border:4px solid #fff;background:#fff;margin-bottom:40px;z-index:10000001;cursor:pointer;flex-shrink:0;}
+#cam-capture:active{transform:scale(0.9);}
+"""
+INPUT_JS = """
+export default function(component){
+    const{parentElement,setTriggerValue}=component;
+    const input=parentElement.querySelector('#ci');
+    const btn=parentElement.querySelector('#sb');
+    const plusBtn=parentElement.querySelector('#pb');
+    const menu=parentElement.querySelector('#menu');
+    const atts=parentElement.querySelector('#atts');
+    const photoBtn=parentElement.querySelector('#mb-photo');
+    const cameraBtn=parentElement.querySelector('#mb-camera');
+    const fileBtn=parentElement.querySelector('#mb-file');
+    const btnSearch=parentElement.querySelector('#btn-search');
+    const btnThink=parentElement.querySelector('#btn-think');
+    const camOverlay=parentElement.querySelector('#cam-overlay');
+    const camVideo=parentElement.querySelector('#cam-video');
+    const camClose=parentElement.querySelector('#cam-close');
+    const camCapture=parentElement.querySelector('#cam-capture');
+    const camCanvas=parentElement.querySelector('#cam-canvas');
+    if(!input||!btn)return;
+    let searchActive=false;
+    let thinkActive=false;
+    let attachments=[];
+    let fileAttachments=[];
+    let camStream=null;
+    const TEXT_EXTS=['txt','md','csv','json','py','js','ts','jsx','tsx','html','css','xml','yaml','yml','toml','ini','cfg','conf','log','sh','bash','zsh','sql','r','rb','go','rs','c','cpp','h','hpp','java','kt','swift','php','pl','lua','asm','s','makefile','dockerfile','env','gitignore','editorconfig'];
+    const imageInput=document.createElement('input');
+    imageInput.type='file';
+    imageInput.accept='image/*';
+    imageInput.style.display='none';
+    parentElement.appendChild(imageInput);
+    const fileInput=document.createElement('input');
+    fileInput.type='file';
+    fileInput.accept='.txt,.md,.csv,.json,.py,.js,.ts,.jsx,.tsx,.html,.css,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.log,.sh,.bash,.zsh,.sql,.r,.rb,.go,.rs,.c,.cpp,.h,.hpp,.java,.kt,.swift,.php,.pl,.lua,.asm,.s,.makefile,.dockerfile,.env,.gitignore,.editorconfig,text/*';
+    fileInput.style.display='none';
+    parentElement.appendChild(fileInput);
+    function resizeImage(dataUrl,maxSize){
+        return new Promise(function(resolve){
+            const img=new Image();
+            img.onload=function(){
+                const c=document.createElement('canvas');
+                let w=img.width,h=img.height;
+                if(w>maxSize||h>maxSize){
+                    if(w>h){h=Math.round(h*maxSize/w);w=maxSize;}
+                    else{w=Math.round(w*maxSize/h);h=maxSize;}
+                }
+                c.width=w;c.height=h;
+                c.getContext('2d').drawImage(img,0,0,w,h);
+                resolve(c.toDataURL('image/jpeg',0.8));
+            };
+            img.src=dataUrl;
+        });
     }
+    function renderAtts(){
+        atts.innerHTML='';
+        attachments.forEach(function(item,idx){
+            const wrap=document.createElement('div');
+            wrap.className='att';
+            const img=document.createElement('img');
+            img.src=item;
+            const x=document.createElement('button');
+            x.type='button';
+            x.className='att-x';
+            x.textContent='\\u2715';
+            x.onclick=function(ev){
+                ev.stopPropagation();
+                attachments.splice(idx,1);
+                renderAtts();
+            };
+            wrap.appendChild(img);
+            wrap.appendChild(x);
+            atts.appendChild(wrap);
+        });
+        fileAttachments.forEach(function(item,idx){
+            const wrap=document.createElement('div');
+            wrap.className='att-file';
+            const name=document.createElement('span');
+            name.className='att-file-name';
+            name.textContent='\\u2399 '+item.name;
+            const x=document.createElement('button');
+            x.type='button';
+            x.className='att-file-x';
+            x.textContent='\\u2715';
+            x.onclick=function(ev){
+                ev.stopPropagation();
+                fileAttachments.splice(idx,1);
+                renderAtts();
+            };
+            wrap.appendChild(name);
+            wrap.appendChild(x);
+            atts.appendChild(wrap);
+        });
+    }
+    function stopCamera(){
+        if(camStream){
+            camStream.getTracks().forEach(function(t){t.stop();});
+            camStream=null;
+        }
+        camOverlay.classList.remove('active');
+    }
+    async function openCamera(){
+        try{
+            camStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'},audio:false});
+            camVideo.srcObject=camStream;
+            camOverlay.classList.add('active');
+            menu.classList.remove('open');
+        }catch(e){
+            setTriggerValue('menu_action','camera_error');
+        }
+    }
+    async function capturePhoto(){
+        if(!camStream)return;
+        camCanvas.width=camVideo.videoWidth;
+        camCanvas.height=camVideo.videoHeight;
+        camCanvas.getContext('2d').drawImage(camVideo,0,0);
+        const dataUrl=camCanvas.toDataURL('image/jpeg',0.9);
+        stopCamera();
+        const resized=await resizeImage(dataUrl,1024);
+        attachments.push(resized);
+        renderAtts();
+    }
+    function updateLabels(){
+        btnSearch.querySelector('.label').textContent=searchActive?'Searching':'Search';
+        btnThink.querySelector('.label').textContent=thinkActive?'Thinking':'Think';
+    }
+    async function send(){
+        const val=input.value.trim();
+        if(!val&&!attachments.length&&!fileAttachments.length)return;
+        const resized=[];
+        for(let i=0;i<attachments.length;i++){
+            resized.push(await resizeImage(attachments[i],1024));
+        }
+        setTriggerValue('submitted',{text:val,search:searchActive,think:thinkActive,images:resized,files:fileAttachments.slice()});
+        input.value='';
+        attachments=[];
+        fileAttachments=[];
+        renderAtts();
+    }
+    btn.onclick=send;
+    input.onkeydown=function(e){if(e.key==='Enter')send();};
+    if(plusBtn&&menu){
+        plusBtn.onclick=function(){
+            menu.classList.toggle('open');
+        };
+    }
+    if(photoBtn){
+        photoBtn.onclick=function(){
+            menu.classList.remove('open');
+            imageInput.click();
+        };
+    }
+    if(cameraBtn){
+        cameraBtn.onclick=openCamera;
+    }
+    if(fileBtn){
+        fileBtn.onclick=function(){
+            menu.classList.remove('open');
+            fileInput.click();
+        };
+    }
+    if(camClose){
+        camClose.onclick=stopCamera;
+    }
+    if(camCapture){
+        camCapture.onclick=capturePhoto;
+    }
+    imageInput.onchange=function(){
+        const f=imageInput.files[0];
+        if(!f)return;
+        const reader=new FileReader();
+        reader.onload=function(){
+            attachments.push(reader.result);
+            renderAtts();
+        };
+        reader.readAsDataURL(f);
+        imageInput.value='';
+    };
+    fileInput.onchange=function(){
+        const f=fileInput.files[0];
+        if(!f)return;
+        const ext=f.name.split('.').pop().toLowerCase();
+        if(!TEXT_EXTS.includes(ext)&&!f.type.startsWith('text/')){
+            setTriggerValue('menu_action','unsupported_file');
+            fileInput.value='';
+            return;
+        }
+        if(f.size>500000){
+            setTriggerValue('menu_action','file_too_large');
+            fileInput.value='';
+            return;
+        }
+        const reader=new FileReader();
+        reader.onload=function(){
+            fileAttachments.push({name:f.name,content:reader.result});
+            renderAtts();
+        };
+        reader.readAsText(f);
+        fileInput.value='';
+    };
+    btnSearch.onclick=function(){
+        searchActive=!searchActive;
+        this.classList.toggle('active',searchActive);
+        updateLabels();
+    };
+    btnThink.onclick=function(){
+        thinkActive=!thinkActive;
+        this.classList.toggle('active',thinkActive);
+        updateLabels();
+    };
 }
+"""
 
-if "app_lang" not in st.session_state:
-    st.session_state.app_lang = "English"
+chat_input = components.component("strafe_chat_input", html=INPUT_HTML, css=INPUT_CSS, js=INPUT_JS)
 
-def on_lang_change():
-    st.session_state.app_lang = st.session_state.lang_selector
+UI_CSS = """
+#topbar{position:fixed;top:0;left:0;right:0;height:56px;padding:0 14px;display:flex;align-items:center;gap:10px;z-index:999998;background:linear-gradient(to bottom,rgba(10,10,10,0.96),rgba(10,10,10,0));pointer-events:none;font-family:'Space Grotesk',sans-serif;}
+#topbar > *{pointer-events:auto;}
+.tb-btn{height:36px;min-width:36px;border-radius:18px;border:1px solid #2a2a2a;background:#1a1a1a;color:#bdbdbd;font-size:0.9rem;cursor:pointer;font-family:'Space Grotesk',sans-serif;padding:0 14px;display:flex;align-items:center;justify-content:center;gap:6px;transition:all 0.2s;box-shadow:0 2px 10px rgba(0,0,0,0.4);}
+.tb-btn:hover{color:#fff;border-color:#4f8dff;}
+#menu-btn{font-size:1.15rem;padding:0;width:36px;}
+#account-btn{font-size:0.82rem;color:#8a8a8a;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+#account-btn:hover{color:#fff;}
+#sidebar-backdrop{position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.55);z-index:1000000;opacity:0;pointer-events:none;transition:opacity 0.2s;}
+#sidebar-backdrop.open{opacity:1;pointer-events:auto;}
+#sidebar{position:fixed;top:0;left:0;width:300px;max-width:86vw;height:100vh;background:#101010;border-right:1px solid #2a2a2a;z-index:1000001;display:flex;flex-direction:column;transform:translateX(-100%);transition:transform 0.25s ease;font-family:'Space Grotesk',sans-serif;}
+#sidebar.open{transform:translateX(0);}
+.sidebar-header{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid #1f1f1f;}
+.sidebar-title{font-size:0.78rem;color:#8a8a8a;font-weight:700;letter-spacing:2px;}
+.icon-x{width:30px;height:30px;border-radius:50%;border:none;background:transparent;color:#8a8a8a;font-size:1rem;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;transition:all 0.15s;}
+.icon-x:hover{color:#fff;background:#222;}
+#new-chat-btn{margin:12px 14px;height:42px;border-radius:10px;border:1px dashed #3a3a3a;background:transparent;color:#bdbdbd;font-size:0.9rem;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.2s;display:flex;align-items:center;justify-content:center;gap:6px;}
+#new-chat-btn:hover{background:#1a1a1a;color:#fff;border-color:#4f8dff;}
+#chat-list{flex:1;overflow-y:auto;padding:0 8px 16px 8px;}
+#chat-list::-webkit-scrollbar{width:6px;}
+#chat-list::-webkit-scrollbar-thumb{background:#2a2a2a;border-radius:3px;}
+.chat-item{display:flex;align-items:center;gap:6px;padding:10px 12px;border-radius:8px;cursor:pointer;color:#bdbdbd;font-size:0.88rem;transition:background 0.15s;margin-bottom:2px;}
+.chat-item:hover{background:#1a1a1a;color:#fff;}
+.chat-item.active{background:#1a2030;color:#fff;border-left:2px solid #4f8dff;padding-left:10px;}
+.chat-title{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.chat-del{width:22px;height:22px;border-radius:50%;border:none;background:transparent;color:#5a5a5a;font-size:0.72rem;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;flex-shrink:0;transition:all 0.15s;}
+.chat-del:hover{color:#ff5555;background:#2a1a1a;}
+.empty-chats{padding:24px 16px;color:#4a4a4a;font-size:0.84rem;text-align:center;line-height:1.5;}
+.sidebar-footer{padding:12px 14px;border-top:1px solid #1f1f1f;flex-shrink:0;}
+#settings-btn{width:100%;height:42px;border-radius:10px;border:1px solid #2a2a2a;background:#181818;color:#bdbdbd;font-size:0.9rem;cursor:pointer;font-family:'Space Grotesk',sans-serif;display:flex;align-items:center;justify-content:center;gap:8px;transition:all 0.2s;}
+#settings-btn:hover{color:#fff;border-color:#4f8dff;background:#222;}
+#settings-btn .gear{font-size:1.05rem;line-height:1;}
+#settings-backdrop{position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.55);z-index:1000002;opacity:0;pointer-events:none;transition:opacity 0.2s;}
+#settings-backdrop.open{opacity:1;pointer-events:auto;}
+#settings-panel{position:fixed;top:0;right:0;width:400px;max-width:92vw;height:100vh;background:#101010;border-left:1px solid #2a2a2a;z-index:1000003;display:flex;flex-direction:column;transform:translateX(100%);transition:transform 0.25s ease;font-family:'Space Grotesk',sans-serif;}
+#settings-panel.open{transform:translateX(0);}
+.settings-header{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid #1f1f1f;flex-shrink:0;}
+.settings-title{font-size:1.02rem;color:#fff;font-weight:600;}
+.tabs{display:flex;gap:2px;padding:10px 12px;overflow-x:auto;border-bottom:1px solid #1a1a1a;flex-shrink:0;}
+.tabs::-webkit-scrollbar{height:0;}
+.tab{flex-shrink:0;height:32px;padding:0 14px;border-radius:16px;border:none;background:transparent;color:#8a8a8a;font-size:0.82rem;cursor:pointer;font-family:'Space Grotesk',sans-serif;transition:all 0.2s;white-space:nowrap;}
+.tab:hover{color:#fff;}
+.tab.active{background:#4f8dff;color:#fff;}
+.tab-content{display:none;padding:16px 18px;overflow-y:auto;flex:1;}
+.tab-content.active{display:block;}
+.tab-content::-webkit-scrollbar{width:6px;}
+.tab-content::-webkit-scrollbar-thumb{background:#2a2a2a;border-radius:3px;}
+.setting-section{margin-bottom:20px;}
+.setting-label{font-size:0.72rem;text-transform:uppercase;letter-spacing:1.5px;color:#6a6a6a;margin-bottom:10px;font-weight:700;}
+.setting-btn{width:100%;height:42px;border-radius:10px;border:1px solid #2a2a2a;background:#181818;color:#ececec;font-size:0.9rem;cursor:pointer;font-family:'Space Grotesk',sans-serif;margin-bottom:8px;text-align:left;padding:0 14px;transition:all 0.2s;display:flex;align-items:center;justify-content:space-between;}
+.setting-btn:hover{background:#222;border-color:#4f8dff;}
+.setting-btn.danger{color:#ff6b6b;}
+.setting-btn.danger:hover{background:#2a1a1a;border-color:#ff5555;}
+.radio-item{display:flex;align-items:flex-start;gap:12px;padding:12px 14px;border-radius:10px;border:1px solid #2a2a2a;background:#141414;margin-bottom:8px;cursor:pointer;transition:all 0.2s;}
+.radio-item:hover{border-color:#3a3a3a;}
+.radio-item.selected{border-color:#4f8dff;background:#161d2b;}
+.radio-dot{width:16px;height:16px;border-radius:50%;border:2px solid #4a4a4a;flex-shrink:0;display:flex;align-items:center;justify-content:center;margin-top:2px;}
+.radio-item.selected .radio-dot{border-color:#4f8dff;}
+.radio-item.selected .radio-dot::after{content:'';width:8px;height:8px;border-radius:50%;background:#4f8dff;}
+.radio-text{flex:1;min-width:0;}
+.radio-title{font-size:0.9rem;color:#ececec;font-weight:500;}
+.radio-title .badge{color:#4f8dff;font-size:0.7rem;font-weight:600;margin-left:6px;}
+.radio-desc{font-size:0.76rem;color:#7a7a7a;margin-top:3px;line-height:1.45;}
+.about-text{color:#bdbdbd;font-size:0.88rem;line-height:1.65;padding:2px 0 8px 0;}
+.account-info{color:#bdbdbd;font-size:0.88rem;line-height:1.55;padding:4px 0 12px 0;}
+.modal{position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.72);z-index:1000010;display:none;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;font-family:'Space Grotesk',sans-serif;backdrop-filter:blur(4px);}
+.modal.open{display:flex;}
+.modal-content{background:#141414;border:1px solid #2a2a2a;border-radius:16px;padding:24px;max-width:400px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.85);}
+.modal-title{font-size:1.15rem;color:#fff;font-weight:600;margin:0 0 8px 0;}
+.modal-text{font-size:0.88rem;color:#8a8a8a;line-height:1.55;margin:0 0 20px 0;}
+.modal-input{width:100%;height:44px;border-radius:10px;border:1px solid #2a2a2a;background:#0a0a0a;color:#fff;font-size:0.95rem;padding:0 14px;font-family:'Space Grotesk',sans-serif;box-sizing:border-box;margin-bottom:16px;outline:none;transition:border-color 0.2s;}
+.modal-input:focus{border-color:#4f8dff;}
+.modal-btn{width:100%;height:44px;border-radius:10px;border:none;font-size:0.95rem;font-family:'Space Grotesk',sans-serif;cursor:pointer;margin-bottom:8px;transition:all 0.2s;font-weight:500;}
+.modal-btn.primary{background:#4f8dff;color:#fff;}
+.modal-btn.primary:hover{background:#3a7ae0;}
+.modal-btn.secondary{background:#1a1a1a;color:#bdbdbd;border:1px solid #2a2a2a;}
+.modal-btn.secondary:hover{background:#222;color:#fff;}
+.modal-btn.danger{background:#ff5555;color:#fff;}
+.modal-btn.danger:hover{background:#e04444;}
+"""
 
-if "native_key" not in st.session_state:
-    st.session_state.native_key = None
+UI_JS = """
+export default function(component){
+    const {parentElement,setTriggerValue}=component;
+    const $=(s)=>parentElement.querySelector(s);
+    const $$=(s)=>parentElement.querySelectorAll(s);
+    const dataEl=$('#strafe-data');
+    if(!dataEl)return;
+    const DATA=JSON.parse(dataEl.textContent);
+    function getLS(k,d){try{return localStorage.getItem(k)||d;}catch(e){return d;}}
+    function setLS(k,v){try{localStorage.setItem(k,v);}catch(e){}}
+    let ui={sidebarOpen:getLS('strafe_sidebar','0')==='1',settingsOpen:getLS('strafe_settings','0')==='1',tab:getLS('strafe_tab','account')};
+    function saveUI(){setLS('strafe_sidebar',ui.sidebarOpen?'1':'0');setLS('strafe_settings',ui.settingsOpen?'1':'0');setLS('strafe_tab',ui.tab);}
+    const isLoggedIn=!!DATA.user;
+    const $accountBtn=$('#account-btn');
+    $accountBtn.textContent=isLoggedIn?DATA.user:'Guest, @no_email.gmail.com';
+    const $sidebar=$('#sidebar');
+    const $sidebarBackdrop=$('#sidebar-backdrop');
+    const $chatList=$('#chat-list');
+    const $settingsPanel=$('#settings-panel');
+    const $settingsBackdrop=$('#settings-backdrop');
+    const $loginModal=$('#login-modal');
+    const $loginEmail=$('#login-email');
+    const $confirmModal=$('#confirm-modal');
+    const $confirmTitle=$('#confirm-title');
+    const $confirmText=$('#confirm-text');
+    function openSidebar(){ui.sidebarOpen=true;saveUI();applySidebar();}
+    function closeSidebar(){ui.sidebarOpen=false;saveUI();applySidebar();}
+    function applySidebar(){$sidebar.classList.toggle('open',ui.sidebarOpen);$sidebarBackdrop.classList.toggle('open',ui.sidebarOpen);}
+    function openSettings(){ui.settingsOpen=true;saveUI();applySettings();}
+    function closeSettings(){ui.settingsOpen=false;saveUI();applySettings();}
+    function applySettings(){$settingsPanel.classList.toggle('open',ui.settingsOpen);$settingsBackdrop.classList.toggle('open',ui.settingsOpen);}
+    function selectTab(t){ui.tab=t;saveUI();$$('.tab').forEach(el=>el.classList.toggle('active',el.dataset.tab===t));$$('.tab-content').forEach(el=>el.classList.toggle('active',el.dataset.tabContent===t));}
+    $$('.tab').forEach(el=>el.addEventListener('click',()=>selectTab(el.dataset.tab)));
+    let confirmCallback=null;
+    function showConfirm(title,text,cb){$confirmTitle.textContent=title;$confirmText.textContent=text;confirmCallback=cb;$confirmModal.classList.add('open');}
+    function closeConfirm(){$confirmModal.classList.remove('open');confirmCallback=null;}
+    $('#confirm-yes').onclick=()=>{if(confirmCallback)confirmCallback();};
+    $('#confirm-no').onclick=closeConfirm;
+    function renderChats(){
+        $chatList.innerHTML='';
+        const chats=DATA.chats||[];
+        if(chats.length===0){const empty=document.createElement('div');empty.className='empty-chats';empty.textContent='No chats yet';$chatList.appendChild(empty);return;}
+        chats.forEach(c=>{
+            const item=document.createElement('div');
+            item.className='chat-item'+(c.id===DATA.current_chat_id?' active':'');
+            const title=document.createElement('span');
+            title.className='chat-title';
+            title.textContent=c.title||'New chat';
+            const del=document.createElement('button');
+            del.className='chat-del';
+            del.type='button';
+            del.textContent='\\u2715';
+            del.onclick=(ev)=>{
+                ev.stopPropagation();
+                showConfirm('Delete chat?','Are you sure you want to delete this chat? This cannot be undone.',()=>{
+                    closeConfirm();
+                    closeSidebar();
+                    setTriggerValue('ui_action',{type:'delete_chat',chat_id:c.id});
+                });
+            };
+            item.appendChild(title);
+            item.appendChild(del);
+            item.onclick=()=>{
+                if(c.id===DATA.current_chat_id){closeSidebar();return;}
+                closeSidebar();
+                setTriggerValue('ui_action',{type:'open_chat',chat_id:c.id});
+            };
+            $chatList.appendChild(item);
+        });
+    }
+    const LANGUAGES=[{id:'en',name:'English',desc:'Auto on'},{id:'ru',name:'Russian',desc:''},{id:'uk',name:'Ukrainian',desc:''}];
+    function renderLanguages(){
+        const $langList=$('#lang-list');
+        $langList.innerHTML='';
+        LANGUAGES.forEach(lang=>{
+            const item=document.createElement('div');
+            item.className='radio-item'+(DATA.language===lang.id?' selected':'');
+            const dot=document.createElement('div');
+            dot.className='radio-dot';
+            const text=document.createElement('div');
+            text.className='radio-text';
+            const title=document.createElement('div');
+            title.className='radio-title';
+            title.textContent=lang.name;
+            if(lang.desc){const badge=document.createElement('span');badge.className='badge';badge.textContent='('+lang.desc+')';title.appendChild(badge);}
+            text.appendChild(title);
+            item.appendChild(dot);
+            item.appendChild(text);
+            item.onclick=()=>{
+                if(DATA.language!==lang.id){closeSettings();setTriggerValue('ui_action',{type:'set_language',lang:lang.id});}
+            };
+            $langList.appendChild(item);
+        });
+    }
+    const MODELS=[{id:'groq',name:'Groq',desc:'Groq has strong coding/math skills. Also known for fast responses.',badge:'Auto on'},{id:'celeris',name:'Celeris',desc:'Celeris is considered to be the fastest model, outrun groq. The skills are currently unknown.',badge:''}];
+    function renderModels(){
+        const $modelList=$('#model-list');
+        $modelList.innerHTML='';
+        MODELS.forEach(m=>{
+            const item=document.createElement('div');
+            item.className='radio-item'+(DATA.model===m.id?' selected':'');
+            const dot=document.createElement('div');
+            dot.className='radio-dot';
+            const text=document.createElement('div');
+            text.className='radio-text';
+            const title=document.createElement('div');
+            title.className='radio-title';
+            title.textContent=m.name;
+            if(m.badge){const badge=document.createElement('span');badge.className='badge';badge.textContent='('+m.badge+')';title.appendChild(badge);}
+            const desc=document.createElement('div');
+            desc.className='radio-desc';
+            desc.textContent=m.desc;
+            text.appendChild(title);
+            text.appendChild(desc);
+            item.appendChild(dot);
+            item.appendChild(text);
+            item.onclick=()=>{
+                if(DATA.model!==m.id){closeSettings();setTriggerValue('ui_action',{type:'set_model',model:m.id});}
+            };
+            $modelList.appendChild(item);
+        });
+    }
+    function renderAccount(){
+        const $accountInfo=$('#account-info');
+        const $logoutBtn=$('#logout-btn');
+        $accountInfo.textContent=isLoggedIn?('Signed in as '+DATA.user):'You are browsing as a guest. Sign in to save chats and settings.';
+        $logoutBtn.style.display=isLoggedIn?'flex':'none';
+    }
+    function openLogin(){$loginEmail.value='';$loginModal.classList.add('open');setTimeout(()=>$loginEmail.focus(),100);}
+    function closeLogin(){$loginModal.classList.remove('open');}
+    $('#login-submit').onclick=()=>{
+        const email=$loginEmail.value.trim();
+        if(!email||!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)){$loginEmail.style.borderColor='#ff5555';return;}
+        closeLogin();
+        setTriggerValue('ui_action',{type:'login',email:email});
+    };
+    $('#login-cancel').onclick=closeLogin;
+    $loginEmail.onkeydown=(e)=>{
+        if(e.key==='Enter')$('#login-submit').click();
+        else if(e.key==='Escape')closeLogin();
+        else $loginEmail.style.borderColor='';
+    };
+    $('#menu-btn').onclick=openSidebar;
+    $('#sidebar-close').onclick=closeSidebar;
+    $sidebarBackdrop.onclick=closeSidebar;
+    $('#new-chat-btn').onclick=()=>{closeSidebar();setTriggerValue('ui_action',{type:'new_chat'});};
+    $('#settings-btn').onclick=()=>{closeSidebar();openSettings();};
+    $('#settings-close').onclick=closeSettings;
+    $settingsBackdrop.onclick=closeSettings;
+    $accountBtn.onclick=()=>{if(isLoggedIn){openSettings();selectTab('account');}else{openLogin();}};
+    $('#logout-btn').onclick=()=>{closeSettings();setTriggerValue('ui_action',{type:'logout'});};
+    $('#delete-all-btn').onclick=()=>{
+        showConfirm('Delete all chats?','Are you sure you want to delete ALL chats? This cannot be undone.',()=>{
+            closeConfirm();
+            closeSettings();
+            setTriggerValue('ui_action',{type:'delete_all_chats'});
+        });
+    };
+    applySidebar();
+    applySettings();
+    renderChats();
+    renderLanguages();
+    renderModels();
+    renderAccount();
+    selectTab(ui.tab);
+}
+"""
 
-if "key" in st.query_params:
-    device_key = st.query_params["key"]
-    st.session_state.native_key = device_key
-elif st.session_state.native_key:
-    device_key = st.session_state.native_key
-    st.query_params["key"] = device_key
-else:
-    device_key = None
 
-ui = TRANSLATIONS[st.session_state.app_lang]
+def build_ui_html(data_json):
+    parts = [
+        '<div id="topbar">',
+        '  <button id="menu-btn" class="tb-btn" type="button">&#9776;</button>',
+        '  <button id="account-btn" class="tb-btn" type="button"></button>',
+        '</div>',
+        '<div id="sidebar-backdrop"></div>',
+        '<aside id="sidebar">',
+        '  <div class="sidebar-header">',
+        '    <span class="sidebar-title">YOUR CHATS</span>',
+        '    <button id="sidebar-close" class="icon-x" type="button">&#10005;</button>',
+        '  </div>',
+        '  <button id="new-chat-btn" type="button">&#65291; New chat</button>',
+        '  <div id="chat-list"></div>',
+        '  <div class="sidebar-footer">',
+        '    <button id="settings-btn" type="button"><span class="gear">&#9881;&#xFE0E;</span><span>Settings</span></button>',
+        '  </div>',
+        '</aside>',
+        '<div id="settings-backdrop"></div>',
+        '<aside id="settings-panel">',
+        '  <div class="settings-header">',
+        '    <span class="settings-title">Settings</span>',
+        '    <button id="settings-close" class="icon-x" type="button">&#10005;</button>',
+        '  </div>',
+        '  <div class="tabs">',
+        '    <button class="tab active" data-tab="account" type="button">Account</button>',
+        '    <button class="tab" data-tab="language" type="button">Language</button>',
+        '    <button class="tab" data-tab="models" type="button">Models/Operators</button>',
+        '    <button class="tab" data-tab="about" type="button">About</button>',
+        '  </div>',
+        '  <div class="tab-content active" data-tab-content="account">',
+        '    <div class="setting-section">',
+        '      <div class="setting-label">Account</div>',
+        '      <div class="account-info" id="account-info"></div>',
+        '      <button class="setting-btn" id="logout-btn" type="button">Log out</button>',
+        '      <button class="setting-btn danger" id="delete-all-btn" type="button">Delete all chats</button>',
+        '    </div>',
+        '  </div>',
+        '  <div class="tab-content" data-tab-content="language">',
+        '    <div class="setting-section">',
+        '      <div class="setting-label">Language</div>',
+        '      <div id="lang-list"></div>',
+        '    </div>',
+        '  </div>',
+        '  <div class="tab-content" data-tab-content="models">',
+        '    <div class="setting-section">',
+        '      <div class="setting-label">Operators</div>',
+        '      <div id="model-list"></div>',
+        '    </div>',
+        '  </div>',
+        '  <div class="tab-content" data-tab-content="about">',
+        '    <div class="setting-section">',
+        '      <div class="setting-label">About</div>',
+        '      <div class="about-text">Strafe is a project made for you\'re use, no data can be seen by anyone even by owner.</div>',
+        '    </div>',
+        '  </div>',
+        '</aside>',
+        '<div id="login-modal" class="modal">',
+        '  <div class="modal-content">',
+        '    <h2 class="modal-title">Sign in</h2>',
+        '    <p class="modal-text">Enter your email to save chats and settings.</p>',
+        '    <input type="email" id="login-email" class="modal-input" placeholder="you@example.com"/>',
+        '    <button id="login-submit" class="modal-btn primary" type="button">Continue</button>',
+        '    <button id="login-cancel" class="modal-btn secondary" type="button">Cancel</button>',
+        '  </div>',
+        '</div>',
+        '<div id="confirm-modal" class="modal">',
+        '  <div class="modal-content">',
+        '    <h2 class="modal-title" id="confirm-title">Delete chat?</h2>',
+        '    <p class="modal-text" id="confirm-text">Are you sure?</p>',
+        '    <button id="confirm-yes" class="modal-btn danger" type="button">Delete</button>',
+        '    <button id="confirm-no" class="modal-btn secondary" type="button">Cancel</button>',
+        '  </div>',
+        '</div>',
+        '<script id="strafe-data" type="application/json">' + data_json + '</script>',
+    ]
+    return "\n".join(parts)
 
-if not device_key:
-    st.title(ui["title"])
-    st.caption(ui["lang_caption"])
-    st.selectbox("Choose Language / Язык / Мова", ["English", "Russian", "Ukrainian"], index=["English", "Russian", "Ukrainian"].index(st.session_state.app_lang), key="lang_selector", on_change=on_lang_change)
-    entered_key = st.text_input(ui["input_label"], type="password")
-    if entered_key:
-        st.query_params["key"] = entered_key
-        st.session_state.native_key = entered_key
-        st.rerun()
-    if st.button(ui["gen_btn"]):
-        new_random_key = str(random.randint(100000, 999999))
-        st.query_params["key"] = new_random_key
-        st.session_state.native_key = new_random_key
-        st.rerun()
-    st.info(ui["info_locked"])
-    st.stop()
 
-file_name = f"chats_{device_key}.json"
+def _chat_store():
+    email = st.session_state.get("user_email")
+    if not email:
+        if "guest_chats" not in st.session_state:
+            st.session_state.guest_chats = {}
+        return st.session_state.guest_chats
+    return db_get_chats(email)
 
-if device_key:
-    components.html(f"""<script>try{{Android.saveKey('{device_key}');}}catch(e){{}}</script>""", height=0)
 
-if "current_device_key" not in st.session_state or st.session_state.current_device_key != device_key:
-    st.session_state.current_device_key = device_key
-    st.session_state.active_key_index = random.choice(get_available_key_indices())
-    if os.path.exists(file_name):
-        try:
-            with open(file_name, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            for chat, msgs in raw.items():
-                cleaned = []
-                for m in msgs:
-                    if isinstance(m, dict) and "role" in m and "content" in m:
-                        cleaned.append(m)
-                    elif isinstance(m, str):
-                        cleaned.append({"role": "user", "content": m})
-                raw[chat] = cleaned
-            st.session_state.all_chats = raw
-        except Exception:
-            st.session_state.all_chats = {"Chat 1": []}
+def _create_new_chat_id():
+    return "chat_" + uuid.uuid4().hex[:12]
+
+
+def _create_current_chat():
+    store = _chat_store()
+    to_remove = [cid for cid, c in store.items() if not c.get("messages")]
+    for cid in to_remove:
+        del store[cid]
+        if st.session_state.get("user_email"):
+            db_delete_chat(st.session_state.user_email, cid)
+    cid = _create_new_chat_id()
+    msgs = []
+    chat = {"id": cid, "title": "New chat", "messages": msgs, "created": time.time(), "updated": time.time()}
+    store[cid] = chat
+    st.session_state.current_chat_id = cid
+    st.session_state.messages = msgs
+    st.session_state.chat_created = chat["created"]
+
+
+def _persist_current_chat():
+    email = st.session_state.get("user_email")
+    if not email:
+        return
+    msgs = st.session_state.get("messages", [])
+    if not msgs:
+        return
+    cid = st.session_state.get("current_chat_id")
+    if not cid:
+        return
+    first_user = next((m for m in msgs if m.get("role") == "user"), None)
+    title = ((first_user or {}).get("content") or "").strip().replace("\n", " ")[:48] or "New chat"
+    chat = {
+        "id": cid,
+        "title": title,
+        "messages": msgs,
+        "created": st.session_state.get("chat_created", time.time()),
+        "updated": time.time(),
+    }
+    db_save_chat(email, chat)
+
+
+def _get_chat_summaries():
+    store = _chat_store()
+    summaries = []
+    for cid, c in store.items():
+        msgs = c.get("messages") or []
+        if not msgs:
+            continue
+        first_user = next((m for m in msgs if m.get("role") == "user"), None)
+        title = ((first_user or {}).get("content") or "").strip().replace("\n", " ")[:48] or "New chat"
+        summaries.append({"id": cid, "title": title, "_updated": c.get("updated", c.get("created", 0))})
+    summaries.sort(key=lambda x: x["_updated"], reverse=True)
+    for s in summaries:
+        del s["_updated"]
+    return summaries
+
+
+def init_ui_state():
+    if "user_email" not in st.session_state:
+        st.session_state.user_email = None
+
+    email = st.session_state.get("user_email")
+    if email:
+        s = db_get_settings(email)
+        st.session_state.language = s["language"]
+        st.session_state.model_choice = s["model"]
     else:
-        st.session_state.all_chats = {"Chat 1": []}
-    st.session_state.current_chat = list(st.session_state.all_chats.keys())[0]
-else:
-    if "all_chats" not in st.session_state:
-        if os.path.exists(file_name):
-            try:
-                with open(file_name, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
-                for chat, msgs in raw.items():
-                    cleaned = []
-                    for m in msgs:
-                        if isinstance(m, dict) and "role" in m and "content" in m:
-                            cleaned.append(m)
-                        elif isinstance(m, str):
-                            cleaned.append({"role": "user", "content": m})
-                    raw[chat] = cleaned
-                st.session_state.all_chats = raw
-            except Exception:
-                st.session_state.all_chats = {"Chat 1": []}
+        st.session_state.setdefault("language", "en")
+        st.session_state.setdefault("model_choice", "groq")
+
+    store = _chat_store()
+    cid = st.session_state.get("current_chat_id")
+
+    if cid is None or cid not in store:
+        remaining = [c for c in store.values() if c.get("messages")]
+        if remaining:
+            remaining.sort(key=lambda c: c.get("updated", c.get("created", 0)), reverse=True)
+            st.session_state.current_chat_id = remaining[0]["id"]
+            st.session_state.messages = remaining[0]["messages"]
+            st.session_state.chat_created = remaining[0].get("created", time.time())
         else:
-            st.session_state.all_chats = {"Chat 1": []}
-    if "current_chat" not in st.session_state or st.session_state.current_chat not in st.session_state.all_chats:
-        st.session_state.current_chat = list(st.session_state.all_chats.keys())[0]
+            _create_current_chat()
+    else:
+        st.session_state.messages = store[cid]["messages"]
+        st.session_state.chat_created = store[cid].get("created", time.time())
 
-def save_chats():
-    if "all_chats" in st.session_state and device_key:
-        with open(file_name, "w", encoding="utf-8") as f:
-            json.dump(st.session_state.all_chats, f, ensure_ascii=False)
 
-if "edit_index" not in st.session_state:
-    st.session_state.edit_index = None
-if "editing_chat_name" not in st.session_state:
-    st.session_state.editing_chat_name = None
-if "placeholder_text" not in st.session_state:
-    st.session_state.placeholder_text = random.choice(ui["phrases"])
-if "thinking_mode_enabled" not in st.session_state:
-    st.session_state.thinking_mode_enabled = True
-if "thinking_speed" not in st.session_state:
-    st.session_state.thinking_speed = "Fast"
-if "web_search_enabled" not in st.session_state:
-    st.session_state.web_search_enabled = True
-if "selected_theme" not in st.session_state:
-    st.session_state.selected_theme = "Old"
-if "neon_glow" not in st.session_state:
-    st.session_state.neon_glow = False
+def get_action_field(action, name, default=None):
+    if action is None:
+        return default
+    if isinstance(action, dict):
+        return action.get(name, default)
+    return getattr(action, name, default)
 
-st.title(ui["title"])
 
-voice_url = f"https://voicechat-phistashkaai.streamlit.app/?key={device_key}"
+def handle_action(action):
+    t = get_action_field(action, "type")
 
-with st.sidebar:
-    st.markdown(f"""
-    <a href="{voice_url}" target="_blank" style="text-decoration:none;">
-        <button style="
-            width:100%;
-            background:#1f6feb;
-            color:white;
-            border:none;
-            padding:8px;
-            border-radius:8px;
-            font-size:16px;
-            cursor:pointer;
-            margin-bottom:10px;
-        ">Open Voice Chat</button>
-    </a>
-    """, unsafe_allow_html=True)
+    def _reset():
+        st.session_state["editing"] = None
+        st.session_state["act"] = None
 
-    st.selectbox(ui["lang_label"], ["English", "Russian", "Ukrainian"], index=["English", "Russian", "Ukrainian"].index(st.session_state.app_lang), key="lang_selector", on_change=on_lang_change)
-    st.header(ui["chats_header"])
-    if st.button(ui["new_chat_btn"]):
-        default_prefix = "Chat" if st.session_state.app_lang == "English" else "Чат"
-        new_name = f"{default_prefix} {len(st.session_state.all_chats) + 1}"
-        st.session_state.all_chats[new_name] = []
-        st.session_state.current_chat = new_name
-        save_chats()
-        st.rerun()
+    if t == "new_chat":
+        _reset()
+        _create_current_chat()
 
-    st.divider()
-    for chat_name in list(st.session_state.all_chats.keys()):
-        if st.session_state.editing_chat_name == chat_name:
-            col_input, col_save = st.columns([0.7, 0.3])
-            with col_input:
-                new_name = st.text_input(ui["rename_label"], value=chat_name, key=f"rename_{chat_name}", label_visibility="collapsed")
-            with col_save:
-                if st.button("💾", key=f"save_name_{chat_name}"):
-                    if new_name and new_name != chat_name:
-                        new_chats = {(new_name if k == chat_name else k): v for k, v in st.session_state.all_chats.items()}
-                        st.session_state.all_chats = new_chats
-                        if st.session_state.current_chat == chat_name or st.session_state.current_chat not in st.session_state.all_chats:
-                            st.session_state.current_chat = new_name
-                        save_chats()
-                    st.session_state.editing_chat_name = None
-                    st.rerun()
-        else:
-            col_chat, col_edit, col_del = st.columns([0.6, 0.2, 0.2])
-            with col_chat:
-                if st.button(chat_name, key=f"select_{chat_name}", use_container_width=True):
-                    st.session_state.current_chat = chat_name
-                    st.session_state.edit_index = None
-                    save_chats()
-                    st.rerun()
-            with col_edit:
-                if st.button("✏️", key=f"edit_title_{chat_name}"):
-                    st.session_state.editing_chat_name = chat_name
-                    st.rerun()
-            with col_del:
-                if st.button("🗑", key=f"del_{chat_name}"):
-                    del st.session_state.all_chats[chat_name]
-                    if not st.session_state.all_chats:
-                        fallback = "Chat 1" if st.session_state.app_lang == "English" else "Чат 1"
-                        st.session_state.all_chats = {fallback: []}
-                    if st.session_state.current_chat == chat_name or st.session_state.current_chat not in st.session_state.all_chats:
-                        st.session_state.current_chat = list(st.session_state.all_chats.keys())[0]
-                    save_chats()
-                    st.rerun()
+    elif t == "open_chat":
+        cid = get_action_field(action, "chat_id")
+        store = _chat_store()
+        if cid and cid in store:
+            _reset()
+            st.session_state.current_chat_id = cid
+            st.session_state.messages = store[cid]["messages"]
+            st.session_state.chat_created = store[cid].get("created", time.time())
 
-    st.divider()
-    st.header(ui["ai_header"])
-    ai_tone = st.selectbox(ui["tone_label"], ["Normal", "Humor & Sarcasm", "Storyteller", "Aggressive", "Socrates", "Lazy", "Gamer Pro", "Hyper Nerd", "Pirate", "Shakespeare"])
-    st.write(f"### {ui['theme_label']}")
-    st.session_state.selected_theme = st.radio("", list(THEMES.keys()), index=list(THEMES.keys()).index(st.session_state.selected_theme))
-    st.session_state.neon_glow = st.toggle(ui["neon_label"], value=st.session_state.neon_glow)
-
-    st.divider()
-    st.header(ui["session_header"])
-    st.success(f"{ui['active_key']} {device_key}")
-    st.info(f"Using API Key #{st.session_state.active_key_index}")
-    st.write("---")
-    st.write("**Token Usage (Today)**")
-    available_keys = get_available_key_indices()
-    limit_display = st.session_state.get("current_model_limit", 100_000)
-    for idx in available_keys:
-        usage = st.session_state.key_usage.get(idx, {"tokens_today": 0})
-        active_marker = " 🟢" if idx == st.session_state.active_key_index else ""
-        st.write(f"Key {idx}{active_marker}: `{usage['tokens_today']:,}` / {limit_display:,} tokens")
-        st.progress(min(1.0, usage["tokens_today"] / limit_display))
-    time_left = get_time_until_reset()
-    hours = time_left.seconds // 3600
-    minutes_left = (time_left.seconds % 3600) // 60
-    st.caption(f"Resets in {hours}h {minutes_left}m")
-    if st.button("Switch API Key (Manual)"):
-        switch_api_key()
-        st.rerun()
-    if st.button(ui["logout_btn"]):
-        st.query_params.clear()
-        st.session_state.native_key = None
-        st.rerun()
-
-theme_css = THEMES[st.session_state.selected_theme]
-if st.session_state.neon_glow:
-    neon_css = (
-        ".stApp * {text-shadow: 0 0 4px currentColor!important;}"
-        "[data-testid='stChatInput'] {box-shadow: 0 0 12px #00ffff!important;}"
-        "div.stButton>button {box-shadow: 0 0 10px #00ffff!important;}"
-        "[data-testid='stSidebar'] {box-shadow: 0 0 10px #00ffff!important;}"
-    )
-else:
-    neon_css = ""
-
-if st.session_state.selected_theme != "Old":
-    st.markdown(f"<style>{theme_css} {neon_css}</style>", unsafe_allow_html=True)
-
-messages = st.session_state.all_chats[st.session_state.current_chat]
-
-for i, message in enumerate(messages):
-    if not isinstance(message, dict):
-        continue
-    role = message["role"]
-    if role == "user":
-        col_btns, col_txt = st.columns([0.15, 0.85])
-        with col_btns:
-            if st.button("✏️", key=f"edit_{i}"):
-                st.session_state.edit_index = i
-                st.rerun()
-            if st.button("↩️", key=f"undo_{i}"):
-                st.session_state.all_chats[st.session_state.current_chat] = messages[:i]
-                save_chats()
-                st.rerun()
-        with col_txt:
-            with st.chat_message("user"):
-                content = message["content"]
-                if st.session_state.edit_index == i:
-                    text_val = content[0]["text"] if isinstance(content, list) else content
-                    edit_val = st.text_input("Edit:", value=text_val, key=f"input_{i}")
-                    if st.button("Save", key=f"save_{i}"):
-                        if isinstance(content, list):
-                            content[0]["text"] = edit_val
-                            messages[i]["content"] = content
-                        else:
-                            messages[i]["content"] = edit_val
-                        st.session_state.all_chats[st.session_state.current_chat] = messages[:i + 1]
-                        save_chats()
-                        st.session_state.edit_index = None
-                        st.rerun()
+    elif t == "delete_chat":
+        cid = get_action_field(action, "chat_id")
+        email = st.session_state.get("user_email")
+        store = _chat_store()
+        if cid and cid in store:
+            _reset()
+            del store[cid]
+            if email:
+                db_delete_chat(email, cid)
+            if st.session_state.get("current_chat_id") == cid:
+                remaining = [c for c in store.values() if c.get("messages")]
+                if remaining:
+                    remaining.sort(key=lambda c: c.get("updated", c.get("created", 0)), reverse=True)
+                    st.session_state.current_chat_id = remaining[0]["id"]
+                    st.session_state.messages = remaining[0]["messages"]
+                    st.session_state.chat_created = remaining[0].get("created", time.time())
                 else:
-                    if isinstance(content, list):
-                        for item in content:
-                            if item["type"] == "text":
-                                st.markdown(item["text"])
-                            elif item["type"] == "image_url":
-                                img_url = item["image_url"]["url"]
-                                uid = f"img_{i}"
-                                st.markdown(f'<a href="#{uid}"><img src="{img_url}" width="150" style="border-radius:10px;"></a><a href="#!" id="{uid}" class="lightbox" title="Tap to close"><div class="close-btn">&times;</div><img src="{img_url}"></a>', unsafe_allow_html=True)
-                    else:
-                        st.markdown(content)
-    else:
-        with st.chat_message("assistant"):
-            st.markdown(message["content"])
-            if "meta" in message:
-                meta = message["meta"]
-                st.caption(f"⏱️ {meta['response_time']:.2f}s  |  🕒 {meta['timestamp']}  |  ⚡ {meta['tokens_per_sec']:.1f} tok/s  |  🔢 {meta['total_tokens']} tokens")
+                    _create_current_chat()
 
-with st.expander("Attach", expanded=False):
-    attach_mode = st.radio(
-        "",
-        [ui["gallery_tab"], ui["camera_tab"], ui["ai_settings_tab"]],
-        horizontal=True,
-        key=f"attach_mode_{st.session_state.current_chat}"
-    )
+    elif t == "login":
+        email = (get_action_field(action, "email") or "").strip().lower()
+        if email:
+            _reset()
+            db_upsert_user(email)
+            st.session_state.user_email = email
+            st.session_state.pop("current_chat_id", None)
+            st.session_state.pop("messages", None)
+            init_ui_state()
 
-    if attach_mode == ui["gallery_tab"]:
-        uploaded_file = st.file_uploader("Choose a photo", type=["image/jpeg", "image/png", "image/webp", "image/gif"], key=f"gallery_uploader_{st.session_state.current_chat}")
-        if uploaded_file is not None:
-            file_bytes = uploaded_file.getvalue()
-            mime = uploaded_file.type or "image/jpeg"
-            st.image(file_bytes, width=120)
-            img_b64 = base64.b64encode(file_bytes).decode("utf-8")
-            photo_prompt = st.text_input("Add a message (optional):", key=f"photo_prompt_{st.session_state.current_chat}")
-            if st.button("Send Photo", key=f"send_photo_{st.session_state.current_chat}"):
-                msg_content = [{"type": "text", "text": photo_prompt if photo_prompt else ui["photo_sent"]}, {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}}]
-                st.session_state.all_chats[st.session_state.current_chat].append({"role": "user", "content": msg_content})
-                save_chats()
-                st.rerun()
+    elif t == "logout":
+        _reset()
+        _persist_current_chat()
+        st.session_state.user_email = None
+        st.session_state.pop("current_chat_id", None)
+        st.session_state.pop("messages", None)
+        init_ui_state()
 
-    elif attach_mode == ui["camera_tab"]:
-        camera_photo = st.camera_input("Take a photo", key=f"cam_{st.session_state.current_chat}")
-        if camera_photo is not None:
-            st.image(camera_photo, width=120)
-            photo_prompt = st.text_input("Add a message (optional):", key=f"cam_prompt_{st.session_state.current_chat}")
-            if st.button("Send Photo", key=f"cam_send_{st.session_state.current_chat}"):
-                file_bytes = camera_photo.getvalue()
-                img_b64 = base64.b64encode(file_bytes).decode("utf-8")
-                mime = camera_photo.type
-                msg_content = [{"type": "text", "text": photo_prompt if photo_prompt else ui["photo_sent"]}, {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}}]
-                st.session_state.all_chats[st.session_state.current_chat].append({"role": "user", "content": msg_content})
-                save_chats()
-                st.rerun()
+    elif t == "delete_all_chats":
+        _reset()
+        email = st.session_state.get("user_email")
+        if email:
+            db_delete_all_chats(email)
+        else:
+            st.session_state.guest_chats = {}
+        st.session_state.pop("current_chat_id", None)
+        st.session_state.pop("messages", None)
+        init_ui_state()
 
-    elif attach_mode == ui["ai_settings_tab"]:
-        st.session_state.thinking_mode_enabled = st.toggle(ui["thinking_label"], value=st.session_state.thinking_mode_enabled, help=ui["thinking_help"])
-        st.session_state.thinking_speed = st.select_slider(ui["thinking_speed"], options=["Fast", "Normal", "Deep Think"], value=st.session_state.thinking_speed)
-        st.session_state.web_search_enabled = st.toggle(ui["web_search_label"], value=st.session_state.web_search_enabled, help=ui["web_search_help"])
+    elif t == "set_language":
+        lang = get_action_field(action, "lang")
+        if lang:
+            st.session_state.language = lang
+            email = st.session_state.get("user_email")
+            if email:
+                db_set_settings(email, language=lang)
 
-prompt = st.chat_input(st.session_state.placeholder_text)
+    elif t == "set_model":
+        model = get_action_field(action, "model")
+        if model:
+            st.session_state.model_choice = model
+            email = st.session_state.get("user_email")
+            if email:
+                db_set_settings(email, model=model)
 
-if prompt:
-    st.session_state.placeholder_text = random.choice(ui["phrases"])
-    st.session_state.api_switch_attempts = 0
-    msg_content = prompt
-    st.session_state.all_chats[st.session_state.current_chat].append({"role": "user", "content": msg_content})
-    save_chats()
     st.rerun()
 
-if (messages and isinstance(messages[-1], dict) and messages[-1].get("role") == "user" and st.session_state.edit_index is None):
-    with st.chat_message("assistant"):
+
+def render_ui():
+    user = st.session_state.get("user_email")
+    chats = _get_chat_summaries()
+    current_cid = st.session_state.get("current_chat_id")
+    lang = st.session_state.get("language", "en")
+    model = st.session_state.get("model_choice", "groq")
+    data = {
+        "user": user,
+        "chats": chats,
+        "current_chat_id": current_cid,
+        "language": lang,
+        "model": model,
+    }
+    data_json = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+    h = hashlib.md5(data_json.encode()).hexdigest()[:10]
+    name = f"strafe_ui_{h}"
+    if "ui_factories" not in st.session_state:
+        st.session_state.ui_factories = {}
+    if name not in st.session_state.ui_factories:
+        st.session_state.ui_factories[name] = components.component(
+            name, html=build_ui_html(data_json), css=UI_CSS, js=UI_JS
+        )
+        while len(st.session_state.ui_factories) > 10:
+            del st.session_state.ui_factories[next(iter(st.session_state.ui_factories))]
+    comp = st.session_state.ui_factories[name]
+    result = comp(key=f"strafe_ui_k_{h}", on_ui_action_change=lambda: None)
+    if result:
+        action = getattr(result, "ui_action", None)
+        if action:
+            handle_action(action)
+
+
+def get_prompt():
+    result = chat_input(key="strafe_inp", on_submitted_change=lambda: None)
+    if not result:
+        return None
+    ma = getattr(result, "menu_action", None)
+    if ma:
+        st.session_state["menu_action"] = ma
+    submitted = getattr(result, "submitted", None)
+    if submitted:
+        return submitted
+    return None
+
+
+CSS = """
+<link href='https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap' rel='stylesheet'>
+<style>
+html,body,[class*='css'],.stApp,#root,.main,.block-container{font-family:'Space Grotesk',sans-serif;background-color:#0a0a0a !important;color:#ececec !important;}
+html,body,.stApp,#root{overflow-x:hidden !important;max-width:100vw !important;}
+section.main,section[data-testid='stMain'],[data-testid='stAppViewContainer'],[data-testid='stMainBlockContainer'],[data-testid='stAppView'],[data-testid='stVerticalBlockBorderWrapper']{overflow-x:hidden !important;max-width:100vw !important;width:100% !important;}
+#MainMenu,footer,header{visibility:hidden;}
+section.main .block-container{padding:64px 1rem 160px 1rem !important;max-width:760px;overflow-x:hidden;}
+div[data-testid='stVerticalBlock']{gap:0 !important;max-width:100% !important;}
+div[data-testid='stChatMessage']{background:transparent !important;border:none !important;padding:8px 0 0 0 !important;margin:0 !important;overflow:visible !important;}
+div[data-testid^='stChatMessageAvatar']{display:none !important;}
+div[data-testid='stChatMessage'] div[data-testid='stChatMessageContent']{background:transparent !important;max-width:100%;padding:0;overflow:visible !important;}
+div[data-testid='stChatMessage'] .stMarkdown p{color:#ececec !important;font-size:1.08rem;line-height:1.6;margin:0 0 2px 0;overflow-wrap:anywhere;}
+div[data-testid='stHorizontalBlock']{flex-wrap:nowrap !important;width:100% !important;max-width:100% !important;}
+div[data-testid='stHorizontalBlock'] > div{min-width:0 !important;max-width:100% !important;}
+div[data-testid='stHorizontalBlock'] > div:nth-child(1) > div[data-testid='stVerticalBlock']{align-items:flex-start !important;}
+div[data-testid='stHorizontalBlock'] > div:nth-child(2) > div[data-testid='stVerticalBlock']{align-items:flex-end !important;}
+div[data-testid='stHorizontalBlock'] > div:nth-child(2) div[data-testid='stPopoverContent']{left:auto !important;right:0 !important;}
+.brand{text-align:center;padding:8px 0 2px 0;font-size:1.4rem;font-weight:700;letter-spacing:3px;background:linear-gradient(90deg,#00f0ff,#a855f7);-webkit-background-clip:text;background-clip:text;color:transparent;}
+.user-bubble{display:flex;justify-content:flex-end;width:100%;margin:10px 0 0 0;}
+.user-bubble-inner{background:#5c5c5c;color:#ffffff;border-radius:26px 26px 8px 26px;padding:14px 22px;max-width:80%;width:fit-content;font-size:1.05rem;line-height:1.5;word-wrap:break-word;}
+.chat-thumb{width:64px;height:64px;object-fit:cover;border-radius:12px;margin:0 8px 6px 0;vertical-align:middle;border:1px solid #2a2a2a;}
+.file-badge{display:inline-flex;align-items:center;gap:4px;background:#2a2a2a;border-radius:8px;padding:4px 10px;font-size:0.75rem;color:#bdbdbd;margin:0 8px 6px 0;font-family:'Space Grotesk',sans-serif;}
+div[data-testid='stPopover']{margin:0 !important;max-width:100% !important;}
+div[data-testid='stPopover'] button{height:20px !important;min-height:0 !important;padding:0 4px !important;font-size:1rem !important;line-height:1 !important;color:#7a7a7a !important;background:transparent !important;border:none !important;box-shadow:none !important;}
+div[data-testid='stPopover'] button:hover{color:#fff !important;}
+div[data-testid='stPopover'] button p{margin:0 !important;}
+.info-line{color:#8a8a8a !important;font-size:0.82rem !important;line-height:1.5 !important;font-family:'Space Grotesk',sans-serif !important;padding:2px 0 6px 0;}
+.info-line span{color:#bdbdbd;}
+.close-row button{background:transparent !important;border:none !important;color:#7a7a7a !important;font-size:0.85rem !important;padding:2px 8px !important;box-shadow:none !important;}
+.close-row button:hover{color:#fff !important;}
+div[data-testid='stExpander'] details{background:#1a1a1a !important;border:1px solid #2a2a2a !important;border-radius:12px !important;padding:8px 12px !important;margin:8px 0 !important;}
+div[data-testid='stExpander'] summary{color:#8a8a8a !important;font-size:0.85rem !important;cursor:pointer !important;}
+div[data-testid='stExpander'] .stMarkdown{color:#bdbdbd !important;font-size:0.9rem !important;}
+</style>
+"""
+
+st.html(CSS)
+st.html("<div class='brand'>STRAFE AI</div>")
+
+KEYS = [st.secrets.get(f"GROQ_API_KEY_{i}") for i in range(1, 7)]
+KEYS = [k for k in KEYS if k]
+if not KEYS:
+    st.error("No GROQ_API_KEY_1..6 found in secrets. Add at least one.")
+    st.stop()
+
+PREFERRED = ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+SYSTEM = (
+    "I keep it direct and simple. No fluff, no long explanations unless you ask for them.\n"
+    "I match your energy\u2014you're casual, I'm casual. You're serious, I'm serious. No fake politeness, just real talk.\n"
+    "I hold nothing back, answer whatever you ask. I don't sugarcoat or dodge. If something's dark or weird, I engage with it\n"
+    "You are Strafe AI, an assistant designed to help and chat. No help with illegal stuff. Be serious. Remember to be direct and simple.\n\n"
+    "CRITICAL: Your internal training data ends in early 2025. If the user asks about recent events, YOU MUST USE the web_search TOOL. Do not guess."
+)
+SAFE_MODELS = {"qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"}
+HISTORY_LIMIT = 30
+
+CELERIS_KEY = st.secrets.get("CELERIS_API_KEY")
+CELERIS_BASE_URL = st.secrets.get("CELERIS_BASE_URL", "")
+CELERIS_MODEL = st.secrets.get("CELERIS_MODEL", "")
+
+_celeris_client = None
+def get_celeris_client():
+    global _celeris_client
+    if _celeris_client is None:
         try:
-            client = get_groq_client()
-            last_msg_content = messages[-1]["content"]
+            from openai import OpenAI
+        except ImportError:
+            raise RuntimeError("openai package not installed. Add openai>=1.40.0 to requirements.")
+        _celeris_client = OpenAI(api_key=CELERIS_KEY, base_url=CELERIS_BASE_URL)
+    return _celeris_client
 
-            current_is_image = isinstance(last_msg_content, list)
-            model = "meta-llama/llama-4-scout-17b-16e-instruct" if current_is_image else "moonshotai/kimi-k2-instruct-0905"
-            st.session_state.current_model_limit = get_daily_limit_for_model(model)
+def celeris_ready():
+    return bool(CELERIS_KEY and CELERIS_BASE_URL and CELERIS_MODEL)
 
-            user_text = next((item["text"] for item in last_msg_content if item["type"] == "text"), "") if current_is_image else last_msg_content
 
-            DEVELOPER_GUIDE = (
-                "Hello! Its me, your developer, guide: "
-                "use emojis, and express yourself, be colorful, developer code is 78297829, this is a code that "
-                "confirms that the user is me (developer). "
-                "When user greets you, greet back, introduce yourself, say what you can do, and be very kind, "
-                "when user gives you a quiz/test/questions then put answer, explanation, your note. "
-                "Alright, bye!"
-            )
+def pick_model():
+    if st.session_state.get("model_choice") == "celeris":
+        return CELERIS_MODEL
+    if "groq_model" in st.session_state:
+        return st.session_state.groq_model
+    try:
+        response = Groq(api_key=KEYS[0]).models.list()
+        avail = {m.id if hasattr(m, 'id') else m[0] for m in response.data}
+    except Exception:
+        avail = set()
+    for p in PREFERRED:
+        if p in avail:
+            st.session_state.groq_model = p
+            return p
+    safe_avail = avail & SAFE_MODELS
+    if safe_avail:
+        chosen = list(safe_avail)[0]
+        st.session_state.groq_model = chosen
+        return chosen
+    if avail:
+        chosen = list(avail)[0]
+        st.session_state.groq_model = chosen
+        return chosen
+    st.session_state.groq_model = PREFERRED[0]
+    return PREFERRED[0]
 
-            if "78297829" in str(user_text):
-                system_prompt = DEVELOPER_GUIDE
-            else:
-                system_prompt = (
-                    "You are Phistashka AI, a helpful assistant. "
-                    "Always use emojis and be colorful. "
-                    "Provide information first, details after, your response (or reaction)/help assistance at the end. "
-                    "And i'd recommend using search very much, but not always."
-                )
-                system_prompt += (
-                    "\n\nYou can create files for the user. For text files use:\n"
-                    "[FILE: filename.txt]\n"
-                    "file content here...\n"
-                    "[END_FILE]\n"
-                    "For binary files (like .zip, .mcaddon, .mcpack, .png) you must encode the content as base64 and use:\n"
-                    "[BINARY_FILE: filename.zip]\n"
-                    "base64-encoded content...\n"
-                    "[END_BINARY_FILE]\n"
-                    "The system will show a download button for each file. Use this when the user asks to create something."
-                )
-                if st.session_state.web_search_enabled and model == "moonshotai/kimi-k2-instruct-0905":
-                    system_prompt += (
-                        "\n\nIf you need real-time or up-to-date information to answer accurately, "
-                        "you can request a web search by outputting [SEARCH:your query] on a separate line. "
-                        "The system will perform the search and provide the results, then you can continue your response."
-                    )
 
-            api_messages = [{"role": "system", "content": system_prompt}]
-            for msg in messages[:-1]:
-                if not isinstance(msg, dict):
-                    continue
-                m_c = msg["content"]
-                if model == "qwen3.8-27b" and isinstance(m_c, list):
-                    m_c = next((item["text"] for item in m_c if item["type"] == "text"), "")
-                api_messages.append({"role": msg["role"], "content": m_c})
+def mark_key_failed(key):
+    if "failed_keys" not in st.session_state:
+        st.session_state.failed_keys = set()
+    st.session_state.failed_keys.add(key)
 
-            m_content = messages[-1]["content"]
-            if model == qwen3.8-27b and isinstance(m_content, list):
-                text_part = next((item["text"] for item in m_content if item["type"] == "text"), "")
-                m_content = f"[User previously attached an image. Image guidelines: If the image is NSFW/illegal then reject it, describe it, then put a note/help offer at end. If its a quiz/test/question, answer/solve it, put answer at top.] {text_part}"
-            api_messages.append({"role": messages[-1]["role"], "content": m_content})
 
-            start_time = time.time()
-
-            if st.session_state.thinking_mode_enabled:
-                think_container = st.empty()
-                think_container.markdown("💭 **Thinking...**")
-
-                thinking_messages = api_messages.copy()
-                thinking_messages.append({
-                    "role": "user",
-                    "content": "Now, before giving your final answer, think through this step by step. Show your reasoning, notes, and plan in a clear way. Write your internal thoughts below:"
-                })
-
-                think_completion = client.chat.completions.create(
-                    model=model,
-                    messages=thinking_messages,
-                    max_tokens=600
-                )
-                thinking_text = think_completion.choices[0].message.content
-
-                with st.expander("💭 AI's thinking process", expanded=False):
-                    st.markdown(thinking_text)
-
-                think_container.empty()
-
-                api_messages.append({
-                    "role": "system",
-                    "content": f"The assistant thought through this: {thinking_text}\n\nNow provide the final polished response to the user based on this reasoning."
-                })
-
-            completion = client.chat.completions.create(model=model, messages=api_messages)
-            response_text = completion.choices[0].message.content
-
-            if st.session_state.web_search_enabled and "[SEARCH:" in response_text:
-                search_line = response_text.split("[SEARCH:")[1].split("]")[0]
-                api_messages.append({"role": "assistant", "content": response_text})
-                search_notice = st.empty()
-                search_notice.info(f"🔍 AI requested search: {search_line}")
-                search_results = web_search(search_line, num_results=10)
-                search_notice.empty()
-                if search_results and not (len(search_results) == 1 and search_results[0]["title"] in ["No results", "Search error"]):
-                    result_count = len(search_results)
-                    result_notice = st.empty()
-                    result_notice.success(f"Found {result_count} web result(s)")
-                    time.sleep(2)
-                    result_notice.empty()
-                    context = "Here are the web search results you requested:\n\n"
-                    for r in search_results[:10]:
-                        context += f"- {r['title']}: {r['snippet']} (Link: {r['link']})\n"
-                    context += "\nNow continue your response using this information."
-                    api_messages.append({"role": "system", "content": context})
-                    completion = client.chat.completions.create(model=model, messages=api_messages)
-                    response_text = completion.choices[0].message.content
-
-            end_time = time.time()
-
-            usage_data = completion.usage
-            total_tokens = usage_data.total_tokens if usage_data else 0
-            prompt_tokens = usage_data.prompt_tokens if usage_data else 0
-            completion_tokens = usage_data.completion_tokens if usage_data else 0
-
-            init_token_tracking()
-            st.session_state.key_usage[st.session_state.active_key_index]["tokens_today"] += total_tokens
-
-            elapsed = end_time - start_time
-            tokens_per_sec = total_tokens / elapsed if elapsed > 0 else 0
-            timestamp_str = datetime.now().strftime("%H:%M:%S")
-
-            files, display_text = extract_files_from_response(response_text)
-            st.markdown(display_text)
-
-            if files:
-                if len(files) == 1:
-                    fname, fdata = files[0]
-                    ext = fname.rsplit('.', 1)[-1].lower() if '.' in fname else ''
-                    mime_map = {
-                        'zip': 'application/zip',
-                        'mcaddon': 'application/octet-stream',
-                        'mcpack': 'application/octet-stream',
-                        'mcworld': 'application/octet-stream',
-                        'jar': 'application/java-archive',
-                        'png': 'image/png',
-                        'jpg': 'image/jpeg',
-                        'jpeg': 'image/jpeg',
-                        'gif': 'image/gif',
-                        'pdf': 'application/pdf',
-                        'json': 'application/json',
-                        'py': 'text/x-python',
-                        'txt': 'text/plain',
-                    }
-                    mime = mime_map.get(ext, 'application/octet-stream')
-                    st.download_button(
-                        label=f"Download {fname}",
-                        data=fdata,
-                        file_name=fname,
-                        mime=mime
-                    )
-                else:
-                    zip_bytes = create_zip(files)
-                    st.download_button(
-                        label=f"Download all as ZIP ({len(files)} files)",
-                        data=zip_bytes,
-                        file_name="package.zip",
-                        mime="application/zip"
-                    )
-                    with st.expander("Files in this package"):
-                        for fname, _ in files:
-                            st.write(f"- {fname}")
-
-            st.caption(f"⏱️ {elapsed:.2f}s  |  🕒 {timestamp_str}  |  ⚡ {tokens_per_sec:.1f} tok/s  |  🔢 {total_tokens} tokens")
-
-            st.session_state.all_chats[st.session_state.current_chat].append({
-                "role": "assistant",
-                "content": response_text,
-                "meta": {
-                    "response_time": elapsed,
-                    "timestamp": timestamp_str,
-                    "tokens_per_sec": tokens_per_sec,
-                    "total_tokens": total_tokens,
-                    "prompt_tokens": prompt_tokens,
-                    "completion_tokens": completion_tokens,
-                },
-            })
-            save_chats()
-            st.rerun()
-
+def _search_fallback(query, num_results, reason):
+    backends = ["lite", "html", "auto", "duckduckgo", "google", "bing", "mojeek", "brave"]
+    last_err = reason
+    for b in backends:
+        try:
+            out = []
+            with DDGS() as ddgs:
+                for r in ddgs.text(query, max_results=num_results, backend=b):
+                    link = r.get("href") or r.get("url") or ""
+                    snippet = r.get("body") or r.get("snippet") or ""
+                    title = r.get("title") or ""
+                    if link or snippet:
+                        out.append({"title": title, "link": link, "snippet": snippet})
+            if out:
+                return out
+        except DDGSException as e:
+            last_err = f"{b}: {e}"
+            time.sleep(0.3)
+            continue
         except Exception as e:
-            error_msg = str(e)
-            if "429" in error_msg or "401" in error_msg:
-                cur_key = st.session_state.active_key_index
-                usage_info = st.session_state.key_usage.get(cur_key, {"tokens_today": 0})
-                limit_val = get_daily_limit_for_model(model) if "model" in locals() else 100_000
-                remaining_tokens = max(0, limit_val - usage_info["tokens_today"])
-                tl = get_time_until_reset()
-                h, m = tl.seconds // 3600, (tl.seconds % 3600) // 60
-                st.error(f"Rate limit reached - Key #{cur_key} used {usage_info['tokens_today']:,} / {limit_val:,} tokens today - Remaining: {remaining_tokens:,} tokens - Resets in: {h}h {m}m - Trying backup key...")
-                if "api_switch_attempts" not in st.session_state:
-                    st.session_state.api_switch_attempts = 0
-                available = get_available_key_indices()
-                max_attempts = len(available) - 1 if len(available) > 1 else 0
-                if st.session_state.api_switch_attempts < max_attempts:
-                    st.session_state.api_switch_attempts += 1
-                    switch_api_key()
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.error("All API keys exhausted. Please try again later or add more keys.")
+            last_err = f"{b}: {e}"
+            continue
+    return [{
+        "title": "Search unavailable",
+        "link": "",
+        "snippet": (
+            f"All search backends are rate limited right now ({last_err}). "
+            "Tell the user you cannot search at the moment, answer from your training "
+            "data with a clear caveat that info may be outdated, and suggest they retry in a minute."
+        ),
+    }]
+
+
+def web_search(query, num_results=3):
+    url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
+    try:
+        r = cffi_requests.get(
+            url,
+            impersonate="chrome124",
+            timeout=15,
+            headers={
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://duckduckgo.com/",
+            },
+        )
+        if r.status_code == 200 and "challenge" not in r.text.lower()[:500]:
+            soup = BeautifulSoup(r.text, "html.parser")
+            results = []
+            for a in soup.select("a.result__a")[:num_results]:
+                href = a.get("href", "")
+                if href.startswith("//duckduckgo.com/l/?uddg="):
+                    try:
+                        href = unquote(href.split("uddg=", 1)[1].split("&", 1)[0])
+                    except Exception:
+                        pass
+                title = a.get_text(strip=True)
+                parent = a.find_parent("div", class_="result")
+                snippet = ""
+                if parent:
+                    sn = parent.select_one(".result__snippet")
+                    if sn:
+                        snippet = sn.get_text(strip=True)
+                if href or snippet:
+                    results.append({"title": title, "link": href, "snippet": snippet})
+            if results:
+                return results
+            return _search_fallback(query, num_results, "empty DDG results")
+        return _search_fallback(query, num_results, f"DDG status {r.status_code}")
+    except Exception as e:
+        return _search_fallback(query, num_results, str(e)[:80])
+
+
+def msg_to_api(m, distance_from_latest=None, full_res=False, strip_images=False):
+    imgs = [] if strip_images else (m.get("images") or [])
+    files = m.get("files") or []
+    has_media = bool(imgs or files)
+    if not has_media:
+        return {"role": m["role"], "content": m["content"]}
+    parts = [{"type": "text", "text": m["content"]}]
+    for f in files:
+        fname = f.get("name", "file")
+        fcontent = f.get("content", "")
+        parts.insert(0, {"type": "text", "text": f"[Attached file: {fname}]\n```\n{fcontent}\n```"})
+    if imgs:
+        if distance_from_latest is not None and not full_res:
+            if distance_from_latest >= 15:
+                pass
+            elif distance_from_latest >= 3:
+                for u in imgs:
+                    parts.append({"type": "image_url", "image_url": {"url": u, "detail": "low"}})
             else:
-                st.error(f"Error: {error_msg}")
+                for u in imgs:
+                    parts.append({"type": "image_url", "image_url": {"url": u}})
+        else:
+            for u in imgs:
+                parts.append({"type": "image_url", "image_url": {"url": u}})
+    return {"role": m["role"], "content": parts}
+
+
+def build_payload(history):
+    model = pick_model()
+    msgs = [{"role": "system", "content": SYSTEM}] + history
+    if st.session_state.get("model_choice") == "celeris":
+        return dict(model=model, messages=msgs, max_tokens=1024, temperature=0.7)
+    kw = dict(model=model, messages=msgs, max_completion_tokens=1024, temperature=0.7)
+    if "qwen" in model.lower():
+        kw["reasoning_format"] = "parsed"
+    elif "gpt-oss" in model.lower():
+        kw["reasoning_effort"] = "medium"
+        kw["reasoning_format"] = "parsed"
+    return kw
+
+
+def call_groq_with_retry(kwargs):
+    if "failed_keys" not in st.session_state:
+        st.session_state.failed_keys = set()
+    pool = [k for k in KEYS if k not in st.session_state.failed_keys] or list(KEYS)
+    last_err = None
+    for key in random.sample(pool, len(pool)):
+        try:
+            return Groq(api_key=key).chat.completions.create(**kwargs), None
+        except NotFoundError:
+            st.session_state.pop("groq_model", None)
+            mark_key_failed(key)
+            last_err = "model gone"
+            continue
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "401" in err_str:
+                mark_key_failed(key)
+            last_err = err_str[:120]
+            continue
+    return None, last_err
+
+
+def ask(use_search=False, use_think=False, look_back=False, clearer_image_back=False):
+    use_celeris = st.session_state.get("model_choice") == "celeris"
+    if use_celeris and not celeris_ready():
+        raise RuntimeError("Celeris not configured. Add CELERIS_API_KEY, CELERIS_BASE_URL, CELERIS_MODEL to secrets.")
+    if use_celeris and use_search:
+        st.toast("Celeris doesn't support search - disabled for this message")
+        use_search = False
+
+    t0 = time.time()
+    if look_back or clearer_image_back:
+        slice_msgs = st.session_state.messages
+    else:
+        slice_msgs = st.session_state.messages[-HISTORY_LIMIT:]
+    total = len(slice_msgs)
+    history = []
+    for idx, m in enumerate(slice_msgs):
+        distance = total - 1 - idx
+        history.append(msg_to_api(m, distance_from_latest=distance, full_res=clearer_image_back, strip_images=use_celeris))
+
+    tools = None
+    if use_search:
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search the web for current info. DO NOT fake the search. If search returns 'No results', tell the user.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Clean keywords ONLY. Fix spelling."
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
+        }]
+
+    max_rounds = 5 if use_search else 1
+    tool_calls_made = 0
+    last_err = None
+    last_round_had_tool_call = False
+
+    for round_idx in range(max_rounds):
+        kwargs = build_payload(history)
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "required" if round_idx == 0 and tool_calls_made == 0 else "auto"
+
+        if use_celeris:
+            try:
+                r = get_celeris_client().chat.completions.create(**kwargs)
+                err = None
+            except Exception as e:
+                r = None
+                err = str(e)[:120]
+        else:
+            r, err = call_groq_with_retry(kwargs)
+
+        if r is None:
+            last_err = err
+            break
+
+        msg = r.choices[0].message
+        if tools and getattr(msg, "tool_calls", None):
+            tool_calls_made += len(msg.tool_calls)
+            if tool_calls_made > 5:
+                raise RuntimeError("Max tool rounds exceeded")
+            if round_idx == max_rounds - 1:
+                last_round_had_tool_call = True
+            assistant_msg = {"role": "assistant", "content": msg.content or "", "tool_calls": []}
+            for tc in msg.tool_calls:
+                assistant_msg["tool_calls"].append({
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments}
+                })
+            history.append(assistant_msg)
+            for tc in msg.tool_calls:
+                if tc.function.name == "web_search":
+                    args = json.loads(tc.function.arguments)
+                    results = web_search(args.get("query", ""))
+                    context = "\n".join(f"{res['title']}: {res['snippet']} ({res['link']})" for res in results)
+                    history.append({"role": "tool", "tool_call_id": tc.id, "content": context})
+            continue
+        else:
+            content = (msg.content or "").strip()
+            reasoning = getattr(msg, "reasoning_content", None)
+            secs = max(0.1, time.time() - t0)
+            used = (r.usage.total_tokens if r.usage else 0)
+            tps = round(used / secs, 1) if used else 0
+            return {
+                "content": content,
+                "secs": round(secs, 1),
+                "tok": f"{tps} tok/s",
+                "sent": datetime.now().strftime("%H:%M"),
+                "search": use_search,
+                "think": use_think,
+                "reasoning": reasoning if use_think else None
+            }
+
+    if last_round_had_tool_call:
+        raise RuntimeError("Model kept calling tools without producing a final answer")
+    raise RuntimeError(last_err or "All API keys failed")
+
+
+def info_html(m):
+    sent = m.get("sent", "?")
+    secs = m.get("secs", "?")
+    tps = m.get("tok", "?")
+    flags = []
+    if m.get("search"):
+        flags.append("\u2315")
+    if m.get("think"):
+        flags.append("\u269b")
+    flag_str = " ".join(flags) + " " if flags else ""
+    return f'<div class="info-line">{flag_str}sent <span>{sent}</span> &nbsp;\u00b7&nbsp; {secs}s &nbsp;\u00b7&nbsp; {tps}</div>'
+
+
+init_ui_state()
+render_ui()
+
+act = st.session_state.pop("act", None)
+if act:
+    kind, i = act
+    if kind == "retry" and i > 0 and st.session_state.messages[i - 1]["role"] == "user":
+        prev_msg = st.session_state.messages[i - 1]
+        st.session_state.messages[:] = st.session_state.messages[:i]
+        try:
+            result = ask(use_search=prev_msg.get("search", False), use_think=prev_msg.get("think", False))
+            st.session_state.messages.append({"role": "assistant", **result})
+        except Exception as e:
+            st.session_state.messages.append({"role": "assistant", "content": f"Error: {str(e)}", "secs": 0, "tok": "0 tok/s", "sent": datetime.now().strftime("%H:%M"), "search": False, "think": False, "reasoning": None})
+        _persist_current_chat()
+        st.rerun()
+    elif kind == "edit":
+        st.session_state["editing"] = i
+
+pending = st.session_state.pop("pending", None)
+if pending is not None:
+    if st.session_state.get("editing") is not None:
+        st.session_state["editing"] = None
+        st.toast("Edit cancelled - message sent instead")
+    text = pending.get("text", "") if isinstance(pending, dict) else pending
+    use_search = pending.get("search", False) if isinstance(pending, dict) else False
+    use_think = pending.get("think", False) if isinstance(pending, dict) else False
+    images = pending.get("images", []) if isinstance(pending, dict) else []
+    files = pending.get("files", []) if isinstance(pending, dict) else []
+    raw = text.strip().lower()
+    is_look_back = raw == "look_back"
+    is_clearer = raw == "clearer_image_back"
+    st.session_state.messages.append({"role": "user", "content": text, "sent": datetime.now().strftime("%H:%M"), "search": use_search, "think": use_think, "images": images, "files": files})
+    try:
+        result = ask(use_search=use_search, use_think=use_think, look_back=is_look_back, clearer_image_back=is_clearer)
+        st.session_state.messages.append({"role": "assistant", **result})
+    except Exception as e:
+        st.session_state.messages.append({"role": "assistant", "content": f"Error: {str(e)}", "secs": 0, "tok": "0 tok/s", "sent": datetime.now().strftime("%H:%M"), "search": use_search, "think": use_think, "reasoning": None})
+    st.session_state["editing"] = None
+    _persist_current_chat()
+    st.rerun()
+
+editing = st.session_state.get("editing")
+
+for i, m in enumerate(st.session_state.messages):
+    if m["role"] == "user":
+        if editing == i:
+            new = st.text_area("Edit", value=m["content"], key=f"ed{i}", height=100)
+            sc, sk = st.columns([1, 6])
+            with sc:
+                if st.button("Save", key=f"sv{i}"):
+                    st.session_state.messages[:] = st.session_state.messages[:i]
+                    st.session_state["pending"] = {"text": new, "search": m.get("search", False), "think": m.get("think", False), "images": m.get("images", []), "files": m.get("files", [])}
+                    st.session_state["editing"] = None
+                    st.rerun()
+            with sk:
+                if st.button("Cancel", key=f"cx{i}"):
+                    st.session_state["editing"] = None
+                    st.rerun()
+        else:
+            safe = H.escape(m["content"]).replace("\n", "<br>")
+            thumbs = "".join(f'<img class="chat-thumb" src="{u}"/>' for u in (m.get("images") or []))
+            file_badges = "".join(f'<span class="file-badge">\u2399 {H.escape(f.get("name","file"))}</span>' for f in (m.get("files") or []))
+            st.html(f'<div class="user-bubble"><div class="user-bubble-inner">{thumbs}{file_badges}{safe}</div></div>')
+            _sp, _mn = st.columns([5, 1])
+            with _mn:
+                with st.popover(MENU_GLYPH, key=f"mu{i}"):
+                    st.html(info_html(m))
+                    if st.button("Edit", key=f"ue{i}"):
+                        st.session_state["act"] = ("edit", i)
+                        st.rerun()
+    else:
+        reasoning = m.get("reasoning")
+        if m.get("think"):
+            think_secs = m.get("secs", "?")
+            if reasoning:
+                with st.expander(f"\u269b Thought for {think_secs}s", expanded=False):
+                    st.markdown(reasoning)
+            else:
+                with st.expander(f"\u269b Thought for {think_secs}s", expanded=False):
+                    st.markdown("_Model processed the request but didn't return visible thoughts._")
+        with st.chat_message("assistant"):
+            st.markdown(m["content"])
+        _mn, _sp = st.columns([1, 3])
+        with _mn:
+            with st.popover(MENU_GLYPH, key=f"ma{i}"):
+                st.html(info_html(m))
+                if st.button("Retry", key=f"ar{i}"):
+                    st.session_state["act"] = ("retry", i)
+                    st.rerun()
+
+prompt = get_prompt()
+if prompt:
+    st.session_state["pending"] = prompt
+    st.rerun()
+
+ma = st.session_state.pop("menu_action", None)
+if ma:
+    if ma == "camera_error":
+        st.toast("Camera access denied or unavailable")
+    elif ma == "unsupported_file":
+        st.toast("Unsupported file type. Use text/code files only.")
+    elif ma == "file_too_large":
+        st.toast("File too large. Max 500KB for text files.")
+    else:
+        st.toast(f"{ma} selected")
