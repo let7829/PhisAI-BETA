@@ -1,4 +1,7 @@
+
 streamlit
 groq
-requests
-beautifulsoup4
+ddgs
+openai
+curl_cffi
+beautifulsoup4 
